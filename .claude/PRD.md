@@ -90,6 +90,7 @@ The MVP goal is to deliver a fully functional orchestration system capable of re
 ❌ Authentication and authorization
 ❌ REST API for external integrations
 ❌ File validation and malware pre-screening
+❌ File metadata tracking (size, hash) - deferred to future
 ❌ Kubernetes deployment configurations
 ❌ Horizontal Pod Autoscaler (HPA) setup
 ❌ Distributed tracing integration (Jaeger/Zipkin)
@@ -181,6 +182,74 @@ The platform follows an **event-driven microservices architecture** with the fol
                                     [Update State + Next Tasks]
 ```
 
+### Architecture Decisions (Finalized)
+
+These decisions were made to balance simplicity, performance, and fault tolerance for the MVP:
+
+#### Database Architecture
+
+**Decision 1: Heartbeat Storage**
+- **Choice:** Store `last_heartbeat_at` directly in `analysis_task` table
+- **Rationale:** Simpler queries without joins, heartbeat is transient data with no history needs
+- **Trade-off:** Accepted - table width increases but queries are faster
+
+**Decision 2: Dependency Storage**
+- **Choice:** Store both `task_config.depends_on_task_config_id` (template) AND `analysis_task.depends_on_task_id` (runtime)
+- **Rationale:** Clear separation between configuration blueprint and runtime execution state
+- **Trade-off:** Accepted - slight redundancy for better query performance and clarity
+
+**Decision 3: File Metadata**
+- **Choice:** Do NOT include file_size or file_hash in MVP
+- **Rationale:** Not critical for core functionality, can be added in future iteration
+- **Future:** Will add for auditing and duplicate detection in post-MVP phase
+
+#### Caching Architecture
+
+**Decision 4: Cache Depth**
+- **Choice:** Store full task details in Redis cache (not just IDs)
+- **Rationale:** Reduces DB roundtrips during active analysis, memory cost acceptable for MVP scale
+- **Trade-off:** Accepted - higher memory usage for significantly better read performance
+
+**Decision 5: Cache Update Pattern**
+- **Choice:** DB-first, then Redis (best-effort)
+- **Pattern:** Update PostgreSQL in transaction → Update Redis cache → If Redis fails, log warning
+- **Rationale:** Database is source of truth, cache staleness is temporary and self-healing
+- **Trade-off:** Accepted - brief cache staleness vs. system availability
+
+#### Spring Boot Configuration
+
+**Decision 6: Database Strategy**
+- **Choice:** Shared PostgreSQL database, same schema for all services
+- **Rationale:** MVP simplicity, orchestrator writes state, engines rarely read (only for recovery)
+- **Future:** May introduce separate schemas per service in microservices evolution
+
+**Decision 7: Kafka Commit Strategy**
+- **Choice:** Manual commit after DB transaction completes (at-least-once delivery)
+- **Rationale:** Simpler than Kafka transactions, safe with idempotency keys, better performance
+- **Trade-off:** Accepted - at-least-once with idempotency vs. exactly-once complexity
+
+**Decision 8: Outbox Polling**
+- **Choice:** Spring `@Scheduled` with fixed delay (1 second interval)
+- **Rationale:** Built-in Spring feature, easy to configure, adequate for MVP throughput
+- **Configuration:** `@Scheduled(fixedDelay = 1000)` with batch size of 50 events
+
+#### Kafka Topic Architecture
+
+**Decision 9: File Events Partitioning**
+- **Choice:** 3 partitions for `file-events` topic
+- **Rationale:** Allows parallel processing of file events, can scale to 3 orchestrator instances
+- **Partition Key:** fileType (APK vs IPA) for even distribution
+
+**Decision 10: Engine Topic Partitioning**
+- **Choice:** Partition by `analysisId`
+- **Rationale:** Ensures all tasks for same analysis go to same partition, maintains ordering for dependent tasks
+- **Pattern:** `ProducerRecord<>(topic, analysisId.toString(), taskEvent)`
+
+**Decision 11: Heartbeat Topic Strategy**
+- **Choice:** Separate `task-heartbeats` topic (not piggybacked on responses)
+- **Rationale:** High volume (every 30s per task), different retention (1 day vs 7 days), separate processing
+- **Configuration:** 3 partitions, 1 day retention
+
 ### Directory Structure
 
 ```
@@ -233,7 +302,8 @@ MobileAnalysisPlatform/
 ├── docker-compose.yml                   # Local development stack
 ├── pom.xml / build.gradle              # Multi-module build
 └── .claude/
-    └── PRD.md                           # This document
+    ├── PRD.md                           # This document
+    └── CLAUDE.md                        # Development standards
 ```
 
 ### Key Design Patterns
@@ -263,23 +333,23 @@ MobileAnalysisPlatform/
    - Concrete engines implement `processTask()` method
    - Reduces boilerplate across engines
 
-6. **Cache-Aside Pattern**
+6. **Cache-Aside Pattern with Write-Through**
    - Read: Check Redis → if miss, read DB → populate Redis
-   - Write: Update DB → invalidate/update Redis
+   - Write: Update DB first → Update Redis (best-effort)
    - Configuration cached with long TTL
-   - Analysis state cached during execution
+   - Analysis state cached during execution, deleted on completion
 
 ### Technology-Specific Patterns
 
 **Spring Boot Patterns:**
 - `@KafkaListener` with manual commit for transactional processing
-- `@Scheduled` for outbox polling
+- `@Scheduled(fixedDelay = 1000)` for outbox polling
 - `@Transactional` for atomic DB operations
 - `@Async` for non-blocking task execution
 
 **Kafka Patterns:**
 - Consumer groups for load balancing
-- Partition key = analysisId for ordering
+- Partition key = analysisId for ordering and locality
 - Dead Letter Topic for failed messages
 - Manual offset commits after DB transaction
 
@@ -303,7 +373,7 @@ MobileAnalysisPlatform/
 - Configuration cached for fast lookup
 - Atomic transaction for state persistence and outbox writes
 - Parallel dispatch of independent tasks
-- Correlation ID generation for end-to-end tracing
+- Analysis ID serves as correlation ID for end-to-end tracing
 
 ### Feature 2: Task Dependency Management
 
@@ -330,17 +400,17 @@ MobileAnalysisPlatform/
 1. All domain changes and event publishing in single transaction
 2. Write events to `outbox` table (processed=false)
 3. Commit transaction
-4. Separate poller reads unprocessed outbox entries
-5. Publish to Kafka
+4. Separate poller reads unprocessed outbox entries (Spring @Scheduled)
+5. Publish to Kafka in batches of 50
 6. Mark as processed=true
 7. Handle idempotency on consumer side
 
 **Key Features:**
 - No lost events even if Kafka is unavailable
-- Polling interval: 1 second
-- Batch size: 50 messages
+- Polling interval: 1 second (configurable)
+- Batch size: 50 messages (configurable)
 - Automatic retry on publish failures
-- Cleanup of old processed records
+- Cleanup of old processed records (7 day retention)
 
 ### Feature 4: Automatic Retry with DLQ
 
@@ -368,13 +438,14 @@ MobileAnalysisPlatform/
 **Operations:**
 1. Engine starts task execution
 2. Send heartbeat event every 30 seconds to `task-heartbeats` topic
-3. Orchestrator updates `analysis_task.last_heartbeat_at`
+3. Orchestrator updates `analysis_task.last_heartbeat_at` (in DB)
 4. Background job checks for stale heartbeats (no update in 2 minutes)
 5. Mark stale tasks as FAILED, trigger retry logic
 
 **Key Features:**
 - Heartbeat interval: 30 seconds
 - Stale threshold: 2 minutes
+- Heartbeat timestamp stored directly in analysis_task table (no separate table)
 - Automatic detection of crashed engine instances
 - Prevents analyses from hanging indefinitely
 
@@ -385,14 +456,15 @@ MobileAnalysisPlatform/
 **Operations:**
 1. On analysis creation: Write to PostgreSQL, cache in Redis
 2. On task status update: Update PostgreSQL in transaction
-3. Update Redis cache immediately (write-through)
+3. Update Redis cache immediately after DB commit (best-effort)
 4. On state query: Read from Redis (fast)
 5. If Redis miss: Read from PostgreSQL, repopulate cache
 6. On analysis completion: Delete from Redis cache
 
 **Key Features:**
 - Redis cache key: `analysis-state:{analysisId}`
-- Write-through caching for consistency
+- Cache stores full task details (status, outputPath, errorMessage, attempts)
+- DB-first update pattern: PostgreSQL is source of truth
 - Fallback to DB if Redis unavailable
 - Configuration cache key: `analysis-config:{fileType}`
 - Configuration cached indefinitely (invalidate on update)
@@ -414,6 +486,7 @@ MobileAnalysisPlatform/
 - Duplicate detection within milliseconds
 - Safe Kafka redelivery handling
 - No accidental double-processing
+- At-least-once delivery with idempotency = effectively exactly-once
 
 ### Feature 8: Analysis Result Storage
 
@@ -508,6 +581,8 @@ spring:
     password: ${DB_PASSWORD:postgres}
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      enable-auto-commit: false  # Manual commit after DB transaction
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -549,9 +624,9 @@ app:
 
 **Local Development (Docker Compose):**
 - All services in same Docker network
-- Shared PostgreSQL instance
+- Shared PostgreSQL instance (same schema)
 - Shared Redis instance
-- Single Kafka broker
+- Single Kafka broker with KRaft
 
 **Production (Future):**
 - Kubernetes deployments with separate namespaces
@@ -574,6 +649,8 @@ app:
 }
 ```
 
+**Note:** analysisId generated by orchestrator serves as correlation ID
+
 #### Task Event (engine-specific topics)
 ```json
 {
@@ -589,6 +666,10 @@ app:
 }
 ```
 
+**Kafka Details:**
+- Partition key: `analysisId` (ensures task ordering)
+- Topic: Dedicated per engine type (e.g., `static-analysis-tasks`)
+
 #### Task Response Event (orchestrator-responses topic)
 ```json
 {
@@ -603,6 +684,10 @@ app:
 }
 ```
 
+**Kafka Details:**
+- Partition key: `analysisId`
+- Topic: `orchestrator-responses` (3 partitions)
+
 #### Heartbeat Event (task-heartbeats topic)
 ```json
 {
@@ -613,6 +698,11 @@ app:
   "timestamp": "2026-01-19T20:32:30Z"
 }
 ```
+
+**Kafka Details:**
+- Separate topic with shorter retention (1 day)
+- 3 partitions
+- High volume (every 30 seconds per running task)
 
 ### REST API (Future - Post MVP)
 
@@ -712,21 +802,21 @@ The MVP is successful when:
 
 **Deliverables:**
 ✅ Multi-module project structure (common, orchestrator, engine-common)
-✅ Database schema with Flyway migrations
+✅ Database schema with Flyway migrations (including heartbeat in analysis_task)
 ✅ PostgreSQL and Redis integration
 ✅ Domain models (Analysis, AnalysisTask, TaskConfig, AnalysisConfig)
-✅ Configuration service with Redis caching
+✅ Configuration service with Redis caching (full task details)
 ✅ File event consumer in orchestrator
 ✅ Analysis creation logic (read config, create tasks, persist state)
-✅ Basic task dispatch to Kafka topics
+✅ Basic task dispatch to Kafka topics (partition by analysisId)
 ✅ Unit tests for domain logic
-✅ Docker Compose setup (PostgreSQL, Redis, Kafka)
+✅ Docker Compose setup (PostgreSQL, Redis, Kafka with KRaft)
 
 **Validation:**
 - File event consumed successfully
 - Analysis and task records created in database
-- Initial state cached in Redis
-- Task events published to Kafka topic
+- Initial state cached in Redis (full task objects)
+- Task events published to Kafka topic with correct partition key
 
 ### Phase 2: Engine Framework & First Engine
 **Duration:** 2 weeks
@@ -735,8 +825,8 @@ The MVP is successful when:
 
 **Deliverables:**
 ✅ AbstractAnalysisEngine base class
-✅ Task event consumption in engine
-✅ Heartbeat mechanism implementation
+✅ Task event consumption in engine (manual commit)
+✅ Heartbeat mechanism implementation (separate topic)
 ✅ Task execution with timeout handling
 ✅ Task response event publishing
 ✅ Static analysis engine (first concrete engine)
@@ -747,7 +837,7 @@ The MVP is successful when:
 **Validation:**
 - Engine consumes task event
 - Task executes within timeout
-- Heartbeat events sent every 30 seconds
+- Heartbeat events sent every 30 seconds to separate topic
 - Output file written to correct path
 - Response event sent to orchestrator-responses topic
 - Failed tasks trigger retry
@@ -759,13 +849,13 @@ The MVP is successful when:
 
 **Deliverables:**
 ✅ Task response consumer in orchestrator
-✅ Task status update logic
+✅ Task status update logic (DB first, then Redis)
 ✅ Dependency resolution (check if dependent tasks ready)
 ✅ Next task dispatch logic
 ✅ Analysis completion detection
 ✅ Analysis failure detection and summary
 ✅ Idempotency handling (check idempotency key)
-✅ State cache updates on every change
+✅ State cache updates on every change (best-effort)
 ✅ End-to-end integration test (file → analysis → completion)
 
 **Validation:**
@@ -784,13 +874,13 @@ The MVP is successful when:
 **Deliverables:**
 ✅ Outbox table and repository
 ✅ Transactional event writing (DB + outbox in single transaction)
-✅ Outbox poller service (@Scheduled)
-✅ Kafka event publishing from outbox
+✅ Outbox poller service (@Scheduled with fixedDelay=1000)
+✅ Kafka event publishing from outbox (batch size 50)
 ✅ Outbox cleanup for processed events
-✅ Heartbeat monitoring job (detect stale tasks)
+✅ Heartbeat monitoring job (detect stale tasks using last_heartbeat_at)
 ✅ DLQ configuration for failed tasks
 ✅ Recovery logic for system restarts
-✅ Manual Kafka offset commits
+✅ Manual Kafka offset commits (after DB transaction)
 ✅ Comprehensive failure scenario tests
 
 **Validation:**
@@ -814,7 +904,7 @@ The MVP is successful when:
 ✅ Multi-engine integration test (complex dependency chain)
 ✅ Configuration management documentation
 ✅ Deployment guide (Docker Compose)
-✅ Logging with correlation IDs across all services
+✅ Logging with analysis IDs as correlation IDs across all services
 ✅ Health check endpoints (Spring Actuator)
 ✅ Performance testing (10+ concurrent analyses)
 ✅ Load testing for each engine type
@@ -824,7 +914,7 @@ The MVP is successful when:
 - All four engines process tasks successfully
 - Complex analysis (APK with 10 tasks, mixed dependencies) completes
 - System handles 20 concurrent analyses
-- All logs contain correlation IDs
+- All logs contain correlation IDs (analysisId)
 - Health checks return accurate status
 - Recovery scenarios tested and documented
 
@@ -857,6 +947,12 @@ The MVP is successful when:
 - Pre-signed URLs for file access
 - Automatic cleanup of old analyses
 - Output versioning on task retries
+
+**File Metadata Tracking**
+- Add file_size and file_hash columns to analysis table
+- Duplicate analysis detection by hash
+- Storage usage analytics
+- Large file timeout correlation
 
 ### Integration Opportunities (Q3 2026)
 
@@ -927,14 +1023,14 @@ The MVP is successful when:
 ### Risk 3: Redis Cache Inconsistency
 **Risk:** Redis cache could become stale if update fails but DB succeeds
 
-**Impact:** Medium - Incorrect status reported, eventual consistency restores
+**Impact:** Low - Temporary inconsistency, self-healing
 
 **Mitigation:**
-- Write-through caching (update both DB and cache)
+- DB-first update pattern (PostgreSQL is source of truth)
+- Best-effort Redis updates with logging on failure
 - Fallback to DB if Redis unavailable
-- Add cache TTL as safety net (delete after analysis completes)
-- Implement cache warming on restart
-- Monitor cache hit rates
+- Cache automatically repopulated on next read
+- Delete cache on analysis completion (no long-term staleness)
 
 ### Risk 4: Long-Running Task Memory Leaks
 **Risk:** Engine memory leaks could cause OOM errors over time
@@ -963,6 +1059,7 @@ The MVP is successful when:
 ## 15. Appendix
 
 ### Related Documents
+- [CLAUDE.md](./../CLAUDE.md) - Development standards and conventions
 - [Spring Boot 3.x Documentation](https://docs.spring.io/spring-boot/docs/current/reference/html/)
 - [Apache Kafka Documentation](https://kafka.apache.org/documentation/)
 - [Transactional Outbox Pattern](https://microservices.io/patterns/data/transactional-outbox.html)
@@ -981,9 +1078,95 @@ The MVP is successful when:
 
 ### Repository Structure
 - **Main Branch:** `main` - Production-ready code
-- **Development Branch:** `develop` - Integration branch
-- **Feature Branches:** `feature/xyz` - Individual features
-- **Release Branches:** `release/x.y.z` - Release preparation
+- **Feature Branches:** `feature/{scope}/{description}` - Individual features
+- **Commit Convention:** Conventional Commits (see CLAUDE.md)
+
+### Database Schema (Finalized)
+
+```sql
+-- Configuration Tables
+CREATE TABLE analysis_config (
+    id BIGSERIAL PRIMARY KEY,
+    file_type VARCHAR(10) NOT NULL UNIQUE,
+    name VARCHAR(100) NOT NULL,
+    version INT NOT NULL DEFAULT 1,
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE task_config (
+    id BIGSERIAL PRIMARY KEY,
+    analysis_config_id BIGINT NOT NULL REFERENCES analysis_config(id),
+    engine_type VARCHAR(50) NOT NULL,
+    task_order INT NOT NULL,
+    depends_on_task_config_id BIGINT REFERENCES task_config(id),
+    timeout_seconds INT NOT NULL DEFAULT 300,
+    max_retries INT NOT NULL DEFAULT 3,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(analysis_config_id, task_order)
+);
+CREATE INDEX idx_task_config_analysis ON task_config(analysis_config_id);
+
+-- Runtime Tables
+CREATE TABLE analysis (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    file_path VARCHAR(500) NOT NULL,
+    file_type VARCHAR(10) NOT NULL,
+    analysis_config_id BIGINT NOT NULL REFERENCES analysis_config(id),
+    status VARCHAR(20) NOT NULL,
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_analysis_status ON analysis(status);
+
+CREATE TABLE analysis_task (
+    id BIGSERIAL PRIMARY KEY,
+    analysis_id UUID NOT NULL REFERENCES analysis(id),
+    task_config_id BIGINT NOT NULL REFERENCES task_config(id),
+    engine_type VARCHAR(50) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    depends_on_task_id BIGINT REFERENCES analysis_task(id),
+    attempts INT NOT NULL DEFAULT 0,
+    output_path VARCHAR(500),
+    error_message TEXT,
+    idempotency_key UUID NOT NULL UNIQUE,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    last_heartbeat_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(analysis_id, task_config_id)
+);
+CREATE INDEX idx_analysis_task_analysis ON analysis_task(analysis_id);
+CREATE INDEX idx_analysis_task_status ON analysis_task(status);
+CREATE INDEX idx_analysis_task_idempotency ON analysis_task(idempotency_key);
+CREATE INDEX idx_analysis_task_heartbeat ON analysis_task(last_heartbeat_at) WHERE status = 'RUNNING';
+
+-- Outbox Table
+CREATE TABLE outbox (
+    id BIGSERIAL PRIMARY KEY,
+    aggregate_type VARCHAR(50) NOT NULL,
+    aggregate_id VARCHAR(100) NOT NULL,
+    event_type VARCHAR(50) NOT NULL,
+    topic VARCHAR(100) NOT NULL,
+    partition_key VARCHAR(100) NOT NULL,
+    payload JSONB NOT NULL,
+    processed BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    processed_at TIMESTAMP
+);
+CREATE INDEX idx_outbox_processed ON outbox(processed, created_at) WHERE NOT processed;
+```
+
+**Key Schema Notes:**
+- `analysis.id` is UUID (serves as correlation ID)
+- `last_heartbeat_at` stored directly in `analysis_task` table
+- Both `task_config.depends_on_task_config_id` AND `analysis_task.depends_on_task_id` present
+- NO file_size or file_hash columns in MVP (deferred to post-MVP)
+- Index on `last_heartbeat_at` for stale task detection
 
 ### Database Connection Details (Local Dev)
 ```yaml
@@ -993,56 +1176,138 @@ PostgreSQL:
   Database: mobile_analysis
   Username: postgres
   Password: postgres
+  Connection Pool: HikariCP (default)
+  Max Pool Size: 10
 
 Redis:
   Host: localhost
   Port: 6379
+  Database: 0
 
 Kafka:
   Bootstrap: localhost:9092
+  Protocol: PLAINTEXT
 ```
 
-### Kafka Topics Configuration
+### Kafka Topics Configuration (Finalized)
+
 ```yaml
 file-events:
-  Partitions: 1
+  Partitions: 3
   Replication: 1
   Retention: 7 days
+  Partition Key: fileType
 
 static-analysis-tasks:
   Partitions: 3
   Replication: 1
   Retention: 7 days
+  Partition Key: analysisId
 
 dynamic-analysis-tasks:
   Partitions: 5
   Replication: 1
   Retention: 7 days
+  Partition Key: analysisId
 
 decompiler-tasks:
   Partitions: 2
   Replication: 1
   Retention: 7 days
+  Partition Key: analysisId
 
 signature-check-tasks:
   Partitions: 1
   Replication: 1
   Retention: 7 days
+  Partition Key: analysisId
 
 orchestrator-responses:
   Partitions: 3
   Replication: 1
   Retention: 7 days
+  Partition Key: analysisId
 
 task-heartbeats:
-  Partitions: 1
+  Partitions: 3
   Replication: 1
   Retention: 1 day
+  Partition Key: analysisId
+  Note: Separate topic, high volume, shorter retention
 
 orchestrator-responses-dlq:
   Partitions: 1
   Replication: 1
   Retention: 30 days
+  Partition Key: analysisId
+```
+
+**Key Kafka Decisions:**
+- All engine topics partitioned by `analysisId` for ordering
+- file-events has 3 partitions for parallel orchestrator instances
+- task-heartbeats is separate topic with 1-day retention
+- All topics use analysisId as partition key except file-events (uses fileType)
+
+### Redis Cache Structure (Finalized)
+
+```json
+// Configuration Cache
+// Key: "analysis-config:APK" or "analysis-config:IPA"
+// TTL: None (manual invalidation on config updates)
+{
+  "id": 1,
+  "fileType": "APK",
+  "name": "Android Analysis v1",
+  "tasks": [
+    {
+      "id": 101,
+      "engineType": "STATIC_ANALYSIS",
+      "order": 1,
+      "dependsOnTaskConfigId": null,
+      "timeoutSeconds": 300,
+      "maxRetries": 3
+    },
+    {
+      "id": 102,
+      "engineType": "DECOMPILER",
+      "order": 2,
+      "dependsOnTaskConfigId": 101,
+      "timeoutSeconds": 600,
+      "maxRetries": 2
+    }
+  ]
+}
+
+// Analysis State Cache (FULL TASK DETAILS)
+// Key: "analysis-state:{analysisId}"
+// TTL: None (deleted on completion)
+// Update Pattern: DB first, then Redis (best-effort)
+{
+  "id": "770e8400-e29b-41d4-a716-446655440002",
+  "status": "RUNNING",
+  "fileType": "APK",
+  "tasks": [
+    {
+      "id": 12345,
+      "engineType": "STATIC_ANALYSIS",
+      "status": "COMPLETED",
+      "outputPath": "/storage/analysis/.../task_12345_output.json",
+      "attempts": 1,
+      "errorMessage": null,
+      "completedAt": "2026-01-19T20:35:00Z"
+    },
+    {
+      "id": 12346,
+      "engineType": "DECOMPILER",
+      "status": "RUNNING",
+      "outputPath": null,
+      "attempts": 1,
+      "errorMessage": null,
+      "lastHeartbeatAt": "2026-01-19T20:36:30Z"
+    }
+  ],
+  "updatedAt": "2026-01-19T20:36:00Z"
+}
 ```
 
 ### Analysis Configuration Example
@@ -1075,8 +1340,8 @@ VALUES (1, 'DYNAMIC_ANALYSIS', 4, 2, 1800, 1);
 
 ---
 
-**Document Version:** 1.0  
+**Document Version:** 1.1  
 **Last Updated:** January 19, 2026  
-**Status:** Draft - Under Review  
+**Status:** Architecture Finalized  
 **Author:** Architecture Team  
-**Reviewers:** Security Team, Engineering Team
+**Next Steps:** Begin Phase 1 Implementation
