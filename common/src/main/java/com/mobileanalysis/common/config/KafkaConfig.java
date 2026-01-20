@@ -1,5 +1,6 @@
 package com.mobileanalysis.common.config;
 
+import com.mobileanalysis.common.events.FileEvent;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -10,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.*;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
 
 import java.util.HashMap;
@@ -20,6 +22,8 @@ public class KafkaConfig {
 
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
+
+    // ========== PRODUCER CONFIGURATIONS ==========
 
     // Producer configuration for String messages
     @Bean
@@ -62,9 +66,43 @@ public class KafkaConfig {
         return new KafkaTemplate<>(objectProducerFactory());
     }
 
-    // Consumer configuration
+    // ========== CONSUMER CONFIGURATIONS ==========
+
+    // Consumer configuration for FileEvent (JSON deserialization)
     @Bean
-    public Map<String, Object> consumerConfigs() {
+    public Map<String, Object> fileEventConsumerConfigs() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false); // Manual commit for reliability
+        props.put(JsonDeserializer.TRUSTED_PACKAGES, "com.mobileanalysis.common.events");
+        props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, FileEvent.class.getName());
+        props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false); // Don't require __TypeId__ header
+        return props;
+    }
+
+    @Bean
+    public ConsumerFactory<String, FileEvent> fileEventConsumerFactory() {
+        return new DefaultKafkaConsumerFactory<>(
+            fileEventConsumerConfigs(),
+            new StringDeserializer(),
+            new JsonDeserializer<>(FileEvent.class, false)
+        );
+    }
+
+    @Bean(name = "kafkaListenerContainerFactory")
+    public ConcurrentKafkaListenerContainerFactory<String, FileEvent> kafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, FileEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(fileEventConsumerFactory());
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL); // Manual commit
+        return factory;
+    }
+
+    // Consumer configuration for String messages (for other use cases)
+    @Bean
+    public Map<String, Object> stringConsumerConfigs() {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
@@ -74,15 +112,15 @@ public class KafkaConfig {
     }
 
     @Bean
-    public ConsumerFactory<String, String> consumerFactory() {
-        return new DefaultKafkaConsumerFactory<>(consumerConfigs());
+    public ConsumerFactory<String, String> stringConsumerFactory() {
+        return new DefaultKafkaConsumerFactory<>(stringConsumerConfigs());
     }
 
-    @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory() {
+    @Bean(name = "stringKafkaListenerContainerFactory")
+    public ConcurrentKafkaListenerContainerFactory<String, String> stringKafkaListenerContainerFactory() {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
-        factory.setConsumerFactory(consumerFactory());
+        factory.setConsumerFactory(stringConsumerFactory());
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL); // Manual commit
         return factory;
     }
