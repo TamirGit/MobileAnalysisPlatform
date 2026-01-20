@@ -11,6 +11,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -29,14 +30,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Integration test for Phase 1 Core Orchestrator Foundation.
- * 
+ * <p>
  * Tests complete workflow:
  * 1. File event triggers analysis creation
  * 2. Analysis and tasks persisted to PostgreSQL
  * 3. Configuration loaded from database and cached in Redis
  * 4. Outbox events created for task dispatch
  * 5. Ready-to-run tasks identified (no dependencies)
- * 
+ * <p>
  * Uses Testcontainers for real infrastructure:
  * - PostgreSQL 16
  * - Redis 7
@@ -47,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("Phase 1 Orchestrator Integration Tests")
 class OrchestratorIntegrationTest {
 
-    // Testcontainers - Real infrastructure
+    // Testcontainers - Real infrastructure (static fields managed by framework)
     @Container
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
         .withDatabaseName("test_mobile_analysis")
@@ -68,11 +69,11 @@ class OrchestratorIntegrationTest {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
-        
+
         // Redis
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
-        
+
         // Kafka
         registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
     }
@@ -90,9 +91,6 @@ class OrchestratorIntegrationTest {
     private AnalysisTaskRepository analysisTaskRepository;
 
     @Autowired
-    private AnalysisConfigRepository analysisConfigRepository;
-
-    @Autowired
     private OutboxRepository outboxRepository;
 
     @BeforeEach
@@ -108,7 +106,7 @@ class OrchestratorIntegrationTest {
     void shouldProcessApkFileEventAndCreateAnalysis() {
         // Arrange
         FileEvent fileEvent = FileEvent.builder()
-            .eventId(UUID.randomUUID().toString())
+            .eventId(UUID.randomUUID())
             .filePath("/storage/incoming/test-app.apk")
             .fileType(FileType.APK)
             .timestamp(Instant.now())
@@ -160,13 +158,13 @@ class OrchestratorIntegrationTest {
             .containsExactlyInAnyOrder(EngineType.DECOMPILER, EngineType.DYNAMIC_ANALYSIS);
 
         // Assert - Outbox events created for independent tasks
-        List<OutboxEventEntity> outboxEvents = outboxRepository.findUnprocessedBatch(100);
+        List<OutboxEventEntity> outboxEvents = outboxRepository.findUnprocessedBatch(PageRequest.of(0, 100));
         assertThat(outboxEvents)
             .hasSizeGreaterThanOrEqualTo(2) // At least 2 for independent tasks
             .allSatisfy(event -> {
                 assertThat(event.getAggregateId()).isEqualTo(analysis.getId().toString());
                 assertThat(event.getPartitionKey()).isEqualTo(analysis.getId().toString());
-                assertThat(event.isProcessed()).isFalse();
+                assertThat(event.getProcessed()).isFalse();
             });
     }
 
@@ -188,7 +186,7 @@ class OrchestratorIntegrationTest {
             .isNotNull()
             .satisfies(config -> {
                 assertThat(config.getFileType()).isEqualTo(FileType.APK);
-                assertThat(config.isActive()).isTrue();
+                assertThat(config.getActive()).isTrue();
             });
 
         // Assert - Same configuration returned
@@ -204,7 +202,7 @@ class OrchestratorIntegrationTest {
     void shouldProcessIpaFileEvent() {
         // Arrange
         FileEvent fileEvent = FileEvent.builder()
-            .eventId(UUID.randomUUID().toString())
+            .eventId(UUID.randomUUID())
             .filePath("/storage/incoming/test-app.ipa")
             .fileType(FileType.IPA)
             .timestamp(Instant.now())
@@ -218,9 +216,7 @@ class OrchestratorIntegrationTest {
         assertThat(analyses)
             .hasSize(1)
             .first()
-            .satisfies(analysis -> {
-                assertThat(analysis.getFileType()).isEqualTo(FileType.IPA);
-            });
+            .satisfies(analysis -> assertThat(analysis.getFileType()).isEqualTo(FileType.IPA));
 
         // Assert - Tasks created for IPA configuration
         AnalysisEntity analysis = analyses.get(0);
@@ -233,7 +229,7 @@ class OrchestratorIntegrationTest {
     void shouldMaintainIdempotency() {
         // Arrange
         FileEvent fileEvent = FileEvent.builder()
-            .eventId(UUID.randomUUID().toString())
+            .eventId(UUID.randomUUID())
             .filePath("/storage/incoming/duplicate-test.apk")
             .fileType(FileType.APK)
             .timestamp(Instant.now())
@@ -241,8 +237,6 @@ class OrchestratorIntegrationTest {
 
         // Act - Process same file event twice
         orchestrator.processFileEvent(fileEvent);
-        UUID firstAnalysisId = analysisRepository.findByStatus(AnalysisStatus.RUNNING).get(0).getId();
-        
         orchestrator.processFileEvent(fileEvent);
 
         // Assert - Two separate analyses created (file path is not idempotency key)
