@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: orchestrator-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/mobile_analysis}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      enable-auto-commit: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+app:
+  storage:
+    base-path: ${STORAGE_PATH:/storage}
+  outbox:
+    poll-interval-ms: 1000
+    batch-size: 50
+  heartbeat:
+    check-interval-ms: 60000
+    stale-threshold-minutes: 2
