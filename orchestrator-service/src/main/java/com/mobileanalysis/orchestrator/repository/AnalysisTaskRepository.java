@@ -14,44 +14,55 @@ import java.util.UUID;
 
 @Repository
 public interface AnalysisTaskRepository extends JpaRepository<AnalysisTaskEntity, Long> {
-    
+
     /**
-     * Find all tasks for a specific analysis, ordered by creation time
+     * Find all tasks for a specific analysis, ordered by creation time.
      */
     List<AnalysisTaskEntity> findByAnalysisIdOrderByCreatedAt(UUID analysisId);
-    
+
     /**
-     * Find tasks by analysis ID and status
+     * Find all tasks for a specific analysis.
+     */
+    List<AnalysisTaskEntity> findByAnalysisId(UUID analysisId);
+
+    /**
+     * Find tasks by analysis ID and status.
      */
     List<AnalysisTaskEntity> findByAnalysisIdAndStatus(UUID analysisId, TaskStatus status);
-    
+
     /**
-     * Find task by idempotency key for duplicate detection
+     * Find task by idempotency key for duplicate detection.
      */
     Optional<AnalysisTaskEntity> findByIdempotencyKey(UUID idempotencyKey);
-    
+
+    /**
+     * Find tasks that depend on a given parent task.
+     */
+    List<AnalysisTaskEntity> findByDependsOnTaskId(Long dependsOnTaskId);
+
     /**
      * Find tasks that are ready to run:
      * - Status is PENDING
      * - Either no dependency OR dependency is COMPLETED
      */
     @Query("SELECT t FROM AnalysisTaskEntity t WHERE t.analysisId = :analysisId " +
-           "AND t.status = 'PENDING' " +
-           "AND (t.dependsOnTaskId IS NULL OR " +
-           "  EXISTS (SELECT 1 FROM AnalysisTaskEntity dep WHERE dep.id = t.dependsOnTaskId " +
-           "           AND dep.status = 'COMPLETED'))")
+            "AND t.status = 'PENDING' " +
+            "AND (t.dependsOnTaskId IS NULL OR " +
+            "  EXISTS (SELECT 1 FROM AnalysisTaskEntity dep WHERE dep.id = t.dependsOnTaskId " +
+            "           AND dep.status = 'COMPLETED'))")
     List<AnalysisTaskEntity> findReadyToRunTasks(@Param("analysisId") UUID analysisId);
-    
+
     /**
-     * Find stale tasks with no recent heartbeat
-     * Used for detecting tasks that may have crashed or timed out
+     * Find stale tasks with no recent heartbeat.
+     * Used for detecting tasks that may have crashed or timed out.
      */
     @Query("SELECT t FROM AnalysisTaskEntity t WHERE t.status = 'RUNNING' " +
-           "AND t.lastHeartbeatAt < :staleThreshold")
+            "AND t.lastHeartbeatAt IS NOT NULL " +
+            "AND t.lastHeartbeatAt < :staleThreshold")
     List<AnalysisTaskEntity> findStaleRunningTasks(@Param("staleThreshold") Instant staleThreshold);
-    
+
     /**
-     * Find all tasks by status
+     * Find all tasks by status.
      */
     List<AnalysisTaskEntity> findByStatus(TaskStatus status);
 }

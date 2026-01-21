@@ -15,84 +15,65 @@ import java.util.List;
 
 /**
  * Scheduled job to monitor task heartbeats and detect stale/zombie tasks.
- * Runs every minute to find tasks that haven't sent a heartbeat in 2+ minutes.
- * Stale tasks are marked as FAILED and eligible for retry.
- * <p>
- * This prevents analyses from hanging indefinitely when engines crash or become unresponsive.
+ *
+ * Default behavior (per PRD):
+ * - Engines send heartbeat every 30 seconds.
+ * - Orchestrator marks a RUNNING task stale if no heartbeat for 2 minutes.
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class HeartbeatMonitor {
-    
+
     private final AnalysisTaskRepository analysisTaskRepository;
-    // TaskRetryService will be added in Task 8
-    
+    private final TaskRetryService taskRetryService;
+
     private static final Duration STALE_THRESHOLD = Duration.ofMinutes(2);
-    
-    /**
-     * Check for stale tasks and mark them as failed.
-     * Runs every minute (60000 ms).
-     */
+
     @Scheduled(fixedDelay = 60000, initialDelay = 60000)
     @Transactional
     public void checkForStaleTasks() {
         Instant staleThreshold = Instant.now().minus(STALE_THRESHOLD);
-        
-        log.debug("Checking for stale tasks (no heartbeat since {})", staleThreshold);
-        
-        // Find all RUNNING tasks with last_heartbeat_at older than threshold
-        List<AnalysisTaskEntity> staleTasks = analysisTaskRepository.findByStatusAndLastHeartbeatAtBefore(
-            TaskStatus.RUNNING, staleThreshold
-        );
-        
+
+        log.debug("Checking for stale RUNNING tasks (lastHeartbeatAt < {})", staleThreshold);
+
+        List<AnalysisTaskEntity> staleTasks = analysisTaskRepository.findStaleRunningTasks(staleThreshold);
+
         if (staleTasks.isEmpty()) {
             log.debug("No stale tasks found");
             return;
         }
-        
-        log.warn("Found {} stale tasks (no heartbeat for {}+ minutes)", 
-            staleTasks.size(), STALE_THRESHOLD.toMinutes());
-        
+
+        log.warn("Found {} stale task(s) (no heartbeat for {}+ minutes)",
+                staleTasks.size(), STALE_THRESHOLD.toMinutes());
+
         for (AnalysisTaskEntity task : staleTasks) {
-            handleStaleTask(task, staleThreshold);
+            handleStaleTask(task);
         }
     }
-    
-    /**
-     * Handle a single stale task:
-     * 1. Mark as FAILED
-     * 2. Set error message
-     * 3. Trigger retry logic (if under max attempts)
-     * 
-     * @param task The stale task
-     * @param staleThreshold The timestamp threshold for staleness
-     */
-    private void handleStaleTask(AnalysisTaskEntity task, Instant staleThreshold) {
+
+    private void handleStaleTask(AnalysisTaskEntity task) {
         Instant lastHeartbeat = task.getLastHeartbeatAt();
-        Duration timeSinceHeartbeat = lastHeartbeat != null ? 
-            Duration.between(lastHeartbeat, Instant.now()) : Duration.ZERO;
-        
-        log.error("Stale task detected: taskId={}, analysisId={}, engineType={}, " +
-                "lastHeartbeat={}, timeSinceHeartbeat={} seconds", 
-            task.getId(), task.getAnalysisId(), task.getEngineType(), 
-            lastHeartbeat, timeSinceHeartbeat.getSeconds());
-        
-        // Mark task as FAILED
+        Duration timeSinceHeartbeat = lastHeartbeat != null
+                ? Duration.between(lastHeartbeat, Instant.now())
+                : Duration.ZERO;
+
+        String reason = String.format(
+                "Task timeout: no heartbeat for %d seconds (threshold: %d seconds)",
+                timeSinceHeartbeat.getSeconds(),
+                STALE_THRESHOLD.getSeconds()
+        );
+
+        log.error("Stale task detected: taskId={}, analysisId={}, engineType={}, lastHeartbeatAt={}, reason={}",
+                task.getId(), task.getAnalysisId(), task.getEngineType(), lastHeartbeat, reason);
+
+        // Mark as failed (will be retried if budget remains)
         task.setStatus(TaskStatus.FAILED);
-        task.setErrorMessage(String.format(
-            "Task timeout: no heartbeat for %d seconds (threshold: %d seconds)",
-            timeSinceHeartbeat.getSeconds(),
-            STALE_THRESHOLD.getSeconds()
-        ));
+        task.setErrorMessage(reason);
         task.setCompletedAt(Instant.now());
-        
         analysisTaskRepository.save(task);
-        
-        log.info("Marked stale task as FAILED: taskId={}, attempts={}", 
-            task.getId(), task.getAttempts());
-        
-        // TODO: Trigger retry via TaskRetryService (will be implemented in Task 8)
-        // For now, task remains FAILED until retry service is added
+
+        // Trigger retry logic
+        taskRetryService.retryIfPossible(task, reason);
     }
 }
