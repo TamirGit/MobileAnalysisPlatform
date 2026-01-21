@@ -1,8 +1,13 @@
 package com.mobileanalysis.orchestrator.messaging;
 
+import com.mobileanalysis.common.domain.TaskStatus;
 import com.mobileanalysis.common.events.TaskResponseEvent;
+import com.mobileanalysis.orchestrator.domain.AnalysisTaskEntity;
+import com.mobileanalysis.orchestrator.domain.OutboxEventEntity;
 import com.mobileanalysis.orchestrator.repository.AnalysisTaskRepository;
 import com.mobileanalysis.orchestrator.repository.OutboxRepository;
+import com.mobileanalysis.orchestrator.service.AnalysisCompletionService;
+import com.mobileanalysis.orchestrator.service.DependencyResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -11,6 +16,8 @@ import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
 
 /**
  * Kafka consumer for task response events from analysis engines.
@@ -30,7 +37,8 @@ public class TaskResponseConsumer {
     
     private final AnalysisTaskRepository taskRepository;
     private final OutboxRepository outboxRepository;
-    // DependencyResolver and AnalysisCompletionService will be added in subsequent tasks
+    private final DependencyResolver dependencyResolver;
+    private final AnalysisCompletionService completionService;
     
     /**
      * Listen for task response events from orchestrator-responses topic.
@@ -50,8 +58,8 @@ public class TaskResponseConsumer {
         MDC.put("taskId", event.getTaskId().toString());
         
         try {
-            log.info("Received task response: analysisId={}, taskId={}, status={}", 
-                event.getAnalysisId(), event.getTaskId(), event.getStatus());
+            log.info("Received task response: analysisId={}, taskId={}, status={}, attempts={}", 
+                event.getAnalysisId(), event.getTaskId(), event.getStatus(), event.getAttempts());
             
             // Process the task response (update DB, resolve dependencies, check completion)
             processTaskResponse(event);
@@ -59,7 +67,8 @@ public class TaskResponseConsumer {
             // Commit offset ONLY after successful processing
             if (acknowledgment != null) {
                 acknowledgment.acknowledge();
-                log.info("Task response processed successfully and committed: taskId={}", event.getTaskId());
+                log.info("Task response processed successfully and committed: taskId={}, status={}", 
+                    event.getTaskId(), event.getStatus());
             }
             
         } catch (Exception e) {
@@ -74,18 +83,59 @@ public class TaskResponseConsumer {
     
     /**
      * Process task response in transaction:
-     * 1. Update task status, output path, error message
-     * 2. Resolve and dispatch dependent tasks (via outbox)
-     * 3. Check if analysis is complete
-     * 4. Update Redis cache
+     * 1. Find and update task status, output path, error message, completed timestamp
+     * 2. Save task to database
+     * 3. If COMPLETED: Resolve dependencies and create outbox events for ready dependent tasks
+     * 4. Save outbox events (transactional with task update)
+     * 5. Check if analysis is complete (all tasks done)
      * 
-     * Will be fully implemented after DependencyResolver and AnalysisCompletionService are created.
+     * All operations are in a single transaction - succeed together or rollback together.
      * 
-     * @param event Task response event
+     * @param event Task response event from engine
      */
     @Transactional
     public void processTaskResponse(TaskResponseEvent event) {
-        // TODO: Implement in Task 6 after DependencyResolver and AnalysisCompletionService are created
-        log.info("Processing task response (placeholder implementation): taskId={}", event.getTaskId());
+        // Step 1: Find task by ID
+        AnalysisTaskEntity task = taskRepository.findById(event.getTaskId())
+            .orElseThrow(() -> new IllegalArgumentException(
+                "Task not found: " + event.getTaskId()));
+        
+        log.debug("Processing task response: current status={}, new status={}", 
+            task.getStatus(), event.getStatus());
+        
+        // Step 2: Update task with response data
+        task.setStatus(event.getStatus());
+        task.setOutputPath(event.getOutputPath());
+        task.setErrorMessage(event.getErrorMessage());
+        task.setAttempts(event.getAttempts());
+        task.setCompletedAt(event.getTimestamp());
+        
+        taskRepository.save(task);
+        
+        log.info("Task {} updated: status={}, outputPath={}, attempts={}", 
+            task.getId(), task.getStatus(), task.getOutputPath(), task.getAttempts());
+        
+        // Step 3: If task completed successfully, resolve dependencies
+        if (event.getStatus() == TaskStatus.COMPLETED) {
+            log.info("Task {} completed successfully, resolving dependencies", task.getId());
+            
+            List<OutboxEventEntity> outboxEvents = dependencyResolver.resolveAndDispatch(task);
+            
+            if (!outboxEvents.isEmpty()) {
+                // Step 4: Save outbox events (same transaction)
+                outboxRepository.saveAll(outboxEvents);
+                log.info("Created {} outbox events for dependent tasks of task {}", 
+                    outboxEvents.size(), task.getId());
+            }
+        } else if (event.getStatus() == TaskStatus.FAILED) {
+            log.warn("Task {} failed: {} (attempts: {})", 
+                task.getId(), event.getErrorMessage(), event.getAttempts());
+        }
+        
+        // Step 5: Check if analysis is complete
+        completionService.checkAndMarkCompletion(event.getAnalysisId());
+        
+        // Note: Redis cache update would go here in future (best-effort, after commit)
+        // For Phase 2, we focus on core functionality
     }
 }
