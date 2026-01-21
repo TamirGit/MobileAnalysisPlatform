@@ -39,12 +39,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 5. Ready-to-run tasks identified (no dependencies)
  * <p>
  * Uses Testcontainers for real infrastructure:
- * - PostgreSQL 16
- * - Redis 7
- * - Kafka 7.6.0 with KRaft (matches docker-compose.yml)
+ * - PostgreSQL 16-alpine
+ * - Redis 7-alpine
+ * - Kafka 7.6.0 (cp-kafka) with KRaft (matches docker-compose.yml)
  * <p>
- * Note: DOCKER_HOST is configured via maven-surefire-plugin in pom.xml
- * to support Docker Desktop WSL2 backend on Windows.
+ * Docker Connection (Windows + Docker Desktop):
+ * - Configured via testcontainers.properties
+ * - Uses npipe:////./pipe/docker_engine (Windows named pipe)
+ * - Works with both Hyper-V and WSL2 backends
+ * - Ryuk disabled for Windows compatibility
  */
 @SpringBootTest
 @Testcontainers
