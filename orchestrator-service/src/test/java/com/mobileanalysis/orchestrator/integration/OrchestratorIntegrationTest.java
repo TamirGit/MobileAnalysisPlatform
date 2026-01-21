@@ -42,18 +42,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * - PostgreSQL 16
  * - Redis 7
  * - Kafka 3.8 with KRaft
+ * <p>
+ * Note: DOCKER_HOST is configured via maven-surefire-plugin in pom.xml
+ * to support Docker Desktop WSL2 backend on Windows.
  */
 @SpringBootTest
 @Testcontainers
 @DisplayName("Phase 1 Orchestrator Integration Tests")
 class OrchestratorIntegrationTest {
-
-    // Configure Docker host for WSL2 before Testcontainers initialization
-    static {
-        // For Windows with Docker Desktop WSL2 backend
-        // This must be set BEFORE @Container fields are initialized
-        System.setProperty("DOCKER_HOST", "tcp://localhost:2375");
-    }
 
     // Testcontainers - Real infrastructure (static fields managed by framework)
     @Container
