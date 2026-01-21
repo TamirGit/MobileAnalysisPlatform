@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Uses Testcontainers for real infrastructure:
  * - PostgreSQL 16
  * - Redis 7
- * - Kafka 3.8 with KRaft
+ * - Kafka 7.6.0 with KRaft (matches docker-compose.yml)
  * <p>
  * Note: DOCKER_HOST is configured via maven-surefire-plugin in pom.xml
  * to support Docker Desktop WSL2 backend on Windows.
@@ -63,7 +63,7 @@ class OrchestratorIntegrationTest {
         .withExposedPorts(6379);
 
     @Container
-    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.8.0"))
+    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.0"))
         .withKraft();
 
     @DynamicPropertySource
