@@ -8,9 +8,9 @@ import com.mobileanalysis.common.events.FileEvent;
 import com.mobileanalysis.common.events.TaskEvent;
 import com.mobileanalysis.orchestrator.domain.*;
 import com.mobileanalysis.orchestrator.repository.*;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,22 +28,14 @@ import java.util.*;
  */
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class AnalysisOrchestrator {
     
-    @Autowired
-    private AnalysisRepository analysisRepository;
-    
-    @Autowired
-    private AnalysisTaskRepository analysisTaskRepository;
-    
-    @Autowired
-    private ConfigurationService configurationService;
-    
-    @Autowired
-    private OutboxRepository outboxRepository;
-    
-    @Autowired
-    private ObjectMapper objectMapper;
+    private final AnalysisRepository analysisRepository;
+    private final AnalysisTaskRepository analysisTaskRepository;
+    private final ConfigurationService configurationService;
+    private final OutboxRepository outboxRepository;
+    private final ObjectMapper objectMapper;
     
     /**
      * Process a file event and create analysis workflow.
