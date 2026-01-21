@@ -3,9 +3,9 @@ package com.mobileanalysis.orchestrator.outbox;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mobileanalysis.orchestrator.domain.OutboxEventEntity;
 import com.mobileanalysis.orchestrator.repository.OutboxRepository;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -29,16 +29,12 @@ import java.util.List;
  */
 @Component
 @Slf4j
+@RequiredArgsConstructor
 public class OutboxPoller {
 
-    @Autowired
-    private OutboxRepository outboxRepository;
-
-    @Autowired
-    private KafkaTemplate<String, Object> kafkaTemplate;
-
-    @Autowired
-    private ObjectMapper objectMapper;
+    private final OutboxRepository outboxRepository;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final ObjectMapper objectMapper;
 
     @Value("${app.outbox.batch-size:50}")
     private int batchSize;
