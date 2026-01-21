@@ -8,11 +8,16 @@ import com.mobileanalysis.orchestrator.repository.AnalysisConfigRepository;
 import com.mobileanalysis.orchestrator.repository.TaskConfigRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Service for loading and caching analysis configurations.
@@ -95,14 +100,34 @@ public class ConfigurationService {
     }
     
     /**
-     * Clear all configuration cache entries.
+     * Clear all configuration cache entries using SCAN command.
+     * SCAN is non-blocking and safe for production use unlike KEYS.
      * Useful for bulk configuration updates.
      */
     public void clearAllCache() {
         try {
-            // Delete all keys matching the prefix pattern
-            redisTemplate.delete(redisTemplate.keys(CACHE_KEY_PREFIX + "*"));
-            log.info("All configuration cache entries cleared");
+            Set<String> keys = new HashSet<>();
+            
+            // Use SCAN instead of KEYS for non-blocking iteration
+            redisTemplate.execute((RedisCallback<Set<String>>) connection -> {
+                ScanOptions options = ScanOptions.scanOptions()
+                    .match(CACHE_KEY_PREFIX + "*")
+                    .count(100) // Hint for iteration batch size
+                    .build();
+                
+                Cursor<byte[]> cursor = connection.scan(options);
+                while (cursor.hasNext()) {
+                    keys.add(new String(cursor.next()));
+                }
+                return keys;
+            });
+            
+            if (!keys.isEmpty()) {
+                redisTemplate.delete(keys);
+                log.info("All configuration cache entries cleared: {} keys deleted", keys.size());
+            } else {
+                log.info("No configuration cache entries found to clear");
+            }
         } catch (Exception e) {
             log.warn("Failed to clear configuration cache", e);
         }
