@@ -6,8 +6,8 @@ import com.mobileanalysis.orchestrator.domain.TaskConfigEntity;
 import com.mobileanalysis.orchestrator.exception.ConfigNotFoundException;
 import com.mobileanalysis.orchestrator.repository.AnalysisConfigRepository;
 import com.mobileanalysis.orchestrator.repository.TaskConfigRepository;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,18 +22,14 @@ import java.util.List;
  */
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class ConfigurationService {
     
     private static final String CACHE_KEY_PREFIX = "analysis-config:";
     
-    @Autowired
-    private AnalysisConfigRepository configRepository;
-    
-    @Autowired
-    private TaskConfigRepository taskConfigRepository;
-    
-    @Autowired
-    private RedisTemplate<String, Object> redisTemplate;
+    private final AnalysisConfigRepository configRepository;
+    private final TaskConfigRepository taskConfigRepository;
+    private final RedisTemplate<String, Object> redisTemplate;
     
     /**
      * Get analysis configuration for a file type.
