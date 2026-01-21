@@ -1,0 +1,141 @@
+package com.mobileanalysis.orchestrator.outbox;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mobileanalysis.orchestrator.domain.OutboxEventEntity;
+import com.mobileanalysis.orchestrator.repository.OutboxRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+/**
+ * Outbox Poller - Scheduled task for transactional outbox pattern.
+ * 
+ * Polls unprocessed events from the outbox table and publishes them to Kafka.
+ * This ensures exactly-once semantics by writing events to the database
+ * in the same transaction as domain changes, then asynchronously publishing.
+ * 
+ * Pattern: Transactional Outbox (Microservices.io)
+ * Polling Interval: 1 second (configurable)
+ * Batch Size: 50 events per poll (configurable)
+ * Kafka Send Timeout: 5 seconds per event
+ */
+@Component
+@Slf4j
+@RequiredArgsConstructor
+public class OutboxPoller {
+
+    private final OutboxRepository outboxRepository;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final ObjectMapper objectMapper;
+
+    @Value("${app.outbox.batch-size:50}")
+    private int batchSize;
+    
+    @Value("${app.outbox.kafka-send-timeout-seconds:5}")
+    private int kafkaSendTimeoutSeconds;
+
+    /**
+     * Poll outbox table and publish unprocessed events to Kafka.
+     * 
+     * Runs every app.outbox.poll-interval-ms (default 1000ms).
+     * Processes up to app.outbox.batch-size events per execution.
+     * 
+     * For each event:
+     * 1. Publish to Kafka topic with partition key from outbox
+     * 2. Mark as processed with timestamp
+     * 3. Continue on individual failures (log warning)
+     */
+    @Scheduled(fixedDelayString = "${app.outbox.poll-interval-ms:1000}")
+    public void pollAndPublish() {
+        try {
+            // Fetch batch of unprocessed events using Pageable
+            List<OutboxEventEntity> events = outboxRepository.findUnprocessedBatch(
+                PageRequest.of(0, batchSize)
+            );
+            
+            if (events.isEmpty()) {
+                return; // No events to process
+            }
+
+            log.debug("Polling outbox: found {} unprocessed events", events.size());
+
+            // Process each event
+            for (OutboxEventEntity event : events) {
+                processOutboxEvent(event);
+            }
+
+            log.info("Outbox poll complete: processed {} events", events.size());
+
+        } catch (Exception e) {
+            log.error("Outbox polling failed", e);
+            // Don't throw - allow next poll to retry
+        }
+    }
+
+    /**
+     * Process single outbox event - publish to Kafka and mark as processed.
+     * Uses bounded timeout to prevent indefinite blocking.
+     * 
+     * @param event Outbox event to process
+     */
+    @Transactional
+    protected void processOutboxEvent(OutboxEventEntity event) {
+        try {
+            // Create Kafka producer record with partition key
+            ProducerRecord<String, Object> record = new ProducerRecord<>(
+                event.getTopic(),
+                event.getPartitionKey(), // analysisId for task ordering
+                parsePayload(event.getPayload())
+            );
+
+            // Publish to Kafka with bounded timeout (non-blocking)
+            kafkaTemplate.send(record)
+                .get(kafkaSendTimeoutSeconds, TimeUnit.SECONDS);
+
+            // Mark as processed
+            event.setProcessed(true);
+            event.setProcessedAt(Instant.now());
+            outboxRepository.save(event);
+
+            log.info("Outbox event published: id={}, topic={}, partitionKey={}", 
+                event.getId(), event.getTopic(), event.getPartitionKey());
+
+        } catch (TimeoutException e) {
+            log.warn("Kafka send timeout for outbox event ({}s), will retry next poll. eventId={}, topic={}",
+                kafkaSendTimeoutSeconds, event.getId(), event.getTopic());
+            // Don't mark as processed - will retry next poll
+        } catch (Exception e) {
+            log.warn("Failed to publish outbox event, will retry next poll. eventId={}, topic={}, error={}", 
+                event.getId(), event.getTopic(), e.getMessage());
+            // Don't mark as processed - will retry next poll
+            // Don't throw - continue processing other events
+        }
+    }
+
+    /**
+     * Parse JSON payload from outbox to Object for Kafka serialization.
+     * 
+     * @param payload JSON string payload
+     * @return Parsed object
+     */
+    private Object parsePayload(String payload) {
+        try {
+            // Parse as generic object - Kafka serializer will handle
+            return objectMapper.readValue(payload, Object.class);
+        } catch (Exception e) {
+            log.error("Failed to parse outbox payload", e);
+            throw new RuntimeException("Invalid outbox payload", e);
+        }
+    }
+}

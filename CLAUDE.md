@@ -13,6 +13,40 @@ A scalable, event-driven security backend for analyzing mobile applications (.ap
 - **Containerization**: Docker, Docker Compose
 - **Utilities**: Lombok, Jackson, SLF4J + Logback
 
+## Version Alignment
+
+**CRITICAL**: All infrastructure component versions must be aligned across:
+1. `docker-compose.yml` (local development)
+2. Testcontainers in integration tests
+3. CI/CD pipeline configurations
+
+### Current Aligned Versions
+
+| Component | Version | Where Used |
+|-----------|---------|------------|
+| PostgreSQL | 16-alpine | docker-compose.yml, Testcontainers |
+| Redis | 7-alpine | docker-compose.yml, Testcontainers |
+| Kafka | 7.6.0 (cp-kafka) | docker-compose.yml, Testcontainers |
+
+### Version Update Checklist
+
+When upgrading any component version:
+
+- [ ] Update `docker-compose.yml`
+- [ ] Update Testcontainers in all `*IntegrationTest.java` files
+- [ ] Update this CLAUDE.md version table
+- [ ] Test locally with new version
+- [ ] Document any breaking changes
+
+**Example Grep Commands:**
+```bash
+# Find all Kafka version references
+grep -r "cp-kafka:" . --include="*.yml" --include="*.java"
+
+# Find all PostgreSQL version references
+grep -r "postgres:" . --include="*.yml" --include="*.java"
+```
+
 ## Project Structure
 
 ```
@@ -80,16 +114,16 @@ docker-compose up -d
 docker-compose down
 
 # View Kafka topics
-docker exec -it kafka kafka-topics --bootstrap-server localhost:9092 --list
+docker exec -it mobile-analysis-kafka kafka-topics --bootstrap-server localhost:9092 --list
 
 # Tail Kafka topic
-docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic file-events --from-beginning
+docker exec -it mobile-analysis-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic file-events --from-beginning
 ```
 
 ## Reference Documentation
 
 | Document | When to Read |
-|----------|--------------|
+|----------|--------------|  
 | `.claude/PRD.md` | Understanding architecture, requirements, features, API specs, implementation phases |
 | [Spring Boot 3.x Docs](https://docs.spring.io/spring-boot/docs/current/reference/html/) | Spring framework features, configuration, best practices |
 | [Apache Kafka Docs](https://kafka.apache.org/documentation/) | Kafka concepts, consumer/producer configs, stream processing |
@@ -126,6 +160,87 @@ com.mobileanalysis.[service-name]/
 - **Constants**: UPPER_SNAKE_CASE (e.g., `MAX_RETRIES`, `DEFAULT_TIMEOUT`)
 - **Packages**: lowercase (e.g., `messaging`, `service`)
 
+**Spring Dependency Injection Best Practices:**
+
+**✅ RECOMMENDED: Constructor Injection**
+```java
+@Service
+@Slf4j
+public class AnalysisOrchestrator {
+    private final AnalysisRepository analysisRepository;
+    private final TaskRepository taskRepository;
+    private final OutboxRepository outboxRepository;
+    private final ObjectMapper objectMapper;
+    
+    // Constructor injection - recommended
+    public AnalysisOrchestrator(
+            AnalysisRepository analysisRepository,
+            TaskRepository taskRepository,
+            OutboxRepository outboxRepository,
+            ObjectMapper objectMapper) {
+        this.analysisRepository = analysisRepository;
+        this.taskRepository = taskRepository;
+        this.outboxRepository = outboxRepository;
+        this.objectMapper = objectMapper;
+    }
+    
+    // Business methods...
+}
+```
+
+**With Lombok @RequiredArgsConstructor (even better):**
+```java
+@Service
+@Slf4j
+@RequiredArgsConstructor  // Lombok generates constructor for all 'final' fields
+public class AnalysisOrchestrator {
+    private final AnalysisRepository analysisRepository;
+    private final TaskRepository taskRepository;
+    private final OutboxRepository outboxRepository;
+    private final ObjectMapper objectMapper;
+    
+    // Business methods...
+}
+```
+
+**❌ DISCOURAGED: Field Injection**
+```java
+@Service
+@Slf4j
+public class AnalysisOrchestrator {
+    @Autowired  // ❌ Avoid this pattern
+    private AnalysisRepository analysisRepository;
+    
+    @Autowired  // ❌ Avoid this pattern
+    private TaskRepository taskRepository;
+    
+    // Business methods...
+}
+```
+
+**Why Constructor Injection?**
+1. **Immutability**: Fields can be `final`, ensuring they're never null or changed
+2. **Testability**: Easy to create instances in tests without Spring context
+3. **Explicit Dependencies**: Constructor shows all dependencies clearly
+4. **Null Safety**: Spring ensures all dependencies are provided at construction time
+5. **Circular Dependency Detection**: Fails fast if circular dependencies exist
+
+**Testing with Constructor Injection:**
+```java
+@Test
+void shouldProcessFileEvent() {
+    // Easy to create with mocks - no Spring context needed
+    AnalysisRepository mockRepo = mock(AnalysisRepository.class);
+    TaskRepository mockTaskRepo = mock(TaskRepository.class);
+    
+    AnalysisOrchestrator orchestrator = new AnalysisOrchestrator(
+        mockRepo, mockTaskRepo, mockOutbox, objectMapper
+    );
+    
+    // Test...
+}
+```
+
 **Key Patterns:**
 - Use `@Service` for business logic classes
 - Use `@Repository` for data access classes
@@ -133,7 +248,7 @@ com.mobileanalysis.[service-name]/
 - Use `@Transactional` for operations modifying multiple entities
 - Use `@Scheduled(fixedDelay = ...)` for periodic tasks (e.g., outbox polling)
 - Use `@Slf4j` (Lombok) for logging
-- Inject dependencies via **constructor injection** (not `@Autowired` on fields)
+- Use **constructor injection** (preferably with Lombok `@RequiredArgsConstructor`)
 
 **Error Handling:**
 ```java
@@ -208,7 +323,10 @@ public void createAnalysis(FileEvent fileEvent) {
 **Outbox Poller (Spring @Scheduled):**
 ```java
 @Component
+@RequiredArgsConstructor  // Constructor injection
 public class OutboxPoller {
+    private final OutboxRepository outboxRepository;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
     
     @Scheduled(fixedDelayString = "${app.outbox.poll-interval-ms:1000}")
     public void pollOutbox() {
@@ -217,10 +335,10 @@ public class OutboxPoller {
         
         for (OutboxEvent event : events) {
             try {
-                ProducerRecord<String, String> record = new ProducerRecord<>(
+                ProducerRecord<String, Object> record = new ProducerRecord<>(
                     event.getTopic(),
                     event.getPartitionKey(), // analysisId for ordering
-                    event.getPayload()
+                    parsePayload(event.getPayload())
                 );
                 kafkaTemplate.send(record).get(); // Synchronous send
                 
@@ -240,7 +358,10 @@ public class OutboxPoller {
 **State Management Pattern (DB-First, Redis-Second):**
 ```java
 @Service
+@RequiredArgsConstructor  // Constructor injection
 public class StateManager {
+    private final AnalysisTaskRepository taskRepository;
+    private final RedisTemplate<String, AnalysisState> redisTemplate;
     
     @Transactional
     public void updateTaskStatus(Long taskId, TaskStatus newStatus, String outputPath) {
@@ -557,16 +678,16 @@ src/test/java/com/mobileanalysis/[service]/
 class AnalysisRepositoryIntegrationTest {
     
     @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16")
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
         .withDatabaseName("test_db");
     
     @Container
     static KafkaContainer kafka = new KafkaContainer(
-        DockerImageName.parse("confluentinc/cp-kafka:7.6.0")
+        DockerImageName.parse("confluentinc/cp-kafka:7.6.0")  // ⚠️ Match docker-compose.yml version!
     );
     
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7")
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
         .withExposedPorts(6379);
     
     @DynamicPropertySource
@@ -585,6 +706,8 @@ class AnalysisRepositoryIntegrationTest {
     }
 }
 ```
+
+**⚠️ CRITICAL**: Always ensure Testcontainers image versions match `docker-compose.yml`!
 
 **Assertions:**
 ```java
@@ -715,6 +838,7 @@ Before marking a PIV loop complete:
 
 - [ ] All tests passing (unit + integration)
 - [ ] Code follows conventions (naming, structure, patterns)
+- [ ] Constructor injection used (preferably with @RequiredArgsConstructor)
 - [ ] Logging includes correlation IDs (analysisId)
 - [ ] Error handling implemented with retries
 - [ ] Database changes have Flyway migration
@@ -728,6 +852,7 @@ Before marking a PIV loop complete:
 - [ ] Conventional commits used
 - [ ] Code reviewed (self-review at minimum)
 - [ ] Documentation updated if needed
+- [ ] **Version alignment verified** (docker-compose.yml matches Testcontainers)
 
 ### PIV Loop Anti-Patterns
 
@@ -743,6 +868,8 @@ Before marking a PIV loop complete:
 - ❌ Kafka auto-commit enabled
 - ❌ Redis failures blocking operations
 - ❌ Using random partition keys for Kafka events
+- ❌ Field injection with @Autowired
+- ❌ Version mismatches between docker-compose and Testcontainers
 
 **Instead:**
 - ✅ Small, incremental changes
@@ -756,6 +883,8 @@ Before marking a PIV loop complete:
 - ✅ Manual Kafka commits after DB transaction
 - ✅ Best-effort Redis updates with logging
 - ✅ analysisId as partition key for ordering
+- ✅ Constructor injection with @RequiredArgsConstructor
+- ✅ Version alignment across all configs
 
 ## Development Workflow
 
@@ -764,7 +893,8 @@ Before marking a PIV loop complete:
 2. Create feature branch: `feature/{scope}/{description}`
 3. Review relevant PRD sections
 4. Review architecture decisions in PRD Section 6
-5. Start PIV loop
+5. **Verify version alignment** (docker-compose.yml vs Testcontainers)
+6. Start PIV loop
 
 ### Daily Development
 1. Ensure Docker Compose is running
@@ -779,8 +909,9 @@ Before marking a PIV loop complete:
 3. Ensure all tests pass
 4. Run integration tests
 5. Self-review code changes
-6. Verify all patterns followed (DB-first, manual commit, etc.)
-7. Update CLAUDE.md if conventions changed
+6. Verify all patterns followed (DB-first, manual commit, constructor injection, etc.)
+7. **Verify version alignment** (docker-compose.yml, Testcontainers, CI/CD)
+8. Update CLAUDE.md if conventions changed
 
 ### Code Review
 1. Check adherence to conventions
@@ -791,11 +922,12 @@ Before marking a PIV loop complete:
 6. Check DB-first, Redis-second pattern
 7. Verify Kafka partition keys are analysisId
 8. Confirm manual Kafka commits
-9. Test locally if possible
+9. Verify constructor injection used (not field injection)
+10. **Check version alignment** across configs
+11. Test locally if possible
 
 ---
 
-**Last Updated**: January 20, 2026  
-**Version**: 1.1  
+**Last Updated**: January 21, 2026  
+**Version**: 1.3  
 **Maintainer**: Development Team
-```
