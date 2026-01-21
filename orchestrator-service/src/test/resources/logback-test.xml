@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Console appender for test logs -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Application logging (INFO by default) -->
+    <root level="INFO">
+        <appender-ref ref="STDOUT" />
+    </root>
+
+    <!-- Testcontainers debug logging -->
+    <logger name="org.testcontainers" level="DEBUG" />
+    <logger name="com.github.dockerjava" level="DEBUG" />
+    <logger name="tc" level="DEBUG" />
+
+    <!-- Spring logging (reduce noise) -->
+    <logger name="org.springframework" level="WARN" />
+    <logger name="org.hibernate" level="WARN" />
+    <logger name="org.apache.kafka" level="WARN" />
+</configuration>
