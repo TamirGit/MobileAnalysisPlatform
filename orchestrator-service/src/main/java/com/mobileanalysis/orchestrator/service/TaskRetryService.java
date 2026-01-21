@@ -11,6 +11,7 @@ import com.mobileanalysis.orchestrator.domain.TaskConfigEntity;
 import com.mobileanalysis.orchestrator.repository.AnalysisRepository;
 import com.mobileanalysis.orchestrator.repository.AnalysisTaskRepository;
 import com.mobileanalysis.orchestrator.repository.TaskConfigRepository;
+import com.mobileanalysis.orchestrator.util.EngineTopicMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -106,7 +107,7 @@ public class TaskRetryService {
                 .timestamp(Instant.now())
                 .build();
 
-        String topic = getTopicForEngineType(task.getEngineType().name());
+        String topic = EngineTopicMapper.getTopicForEngineType(task.getEngineType());
 
         try {
             String payload = objectMapper.writeValueAsString(taskEvent);
@@ -146,15 +147,5 @@ public class TaskRetryService {
 
         Optional<AnalysisTaskEntity> parent = analysisTaskRepository.findById(task.getDependsOnTaskId());
         return parent.map(AnalysisTaskEntity::getOutputPath).orElse(null);
-    }
-
-    private String getTopicForEngineType(String engineType) {
-        return switch (engineType) {
-            case "STATIC_ANALYSIS" -> "static-analysis-tasks";
-            case "DYNAMIC_ANALYSIS" -> "dynamic-analysis-tasks";
-            case "DECOMPILER" -> "decompiler-tasks";
-            case "SIGNATURE_CHECK" -> "signature-check-tasks";
-            default -> throw new IllegalArgumentException("Unknown engine type: " + engineType);
-        };
     }
 }

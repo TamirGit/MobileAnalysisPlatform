@@ -11,6 +11,7 @@ import com.mobileanalysis.orchestrator.domain.TaskConfigEntity;
 import com.mobileanalysis.orchestrator.repository.AnalysisRepository;
 import com.mobileanalysis.orchestrator.repository.AnalysisTaskRepository;
 import com.mobileanalysis.orchestrator.repository.TaskConfigRepository;
+import com.mobileanalysis.orchestrator.util.EngineTopicMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -124,7 +125,7 @@ public class DependencyResolver {
                     .timestamp(Instant.now())
                     .build();
 
-            String topic = getTopicForEngineType(task.getEngineType().name());
+            String topic = EngineTopicMapper.getTopicForEngineType(task.getEngineType());
             String payload = objectMapper.writeValueAsString(taskEvent);
 
             return OutboxEventEntity.builder()
@@ -141,15 +142,5 @@ public class DependencyResolver {
             log.error("Failed to serialize task event: taskId={}", task.getId(), e);
             throw new RuntimeException("Failed to create outbox event", e);
         }
-    }
-
-    private String getTopicForEngineType(String engineType) {
-        return switch (engineType) {
-            case "STATIC_ANALYSIS" -> "static-analysis-tasks";
-            case "DYNAMIC_ANALYSIS" -> "dynamic-analysis-tasks";
-            case "DECOMPILER" -> "decompiler-tasks";
-            case "SIGNATURE_CHECK" -> "signature-check-tasks";
-            default -> throw new IllegalArgumentException("Unknown engine type: " + engineType);
-        };
     }
 }

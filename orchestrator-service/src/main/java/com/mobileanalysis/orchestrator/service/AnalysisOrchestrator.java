@@ -8,6 +8,7 @@ import com.mobileanalysis.common.events.FileEvent;
 import com.mobileanalysis.common.events.TaskEvent;
 import com.mobileanalysis.orchestrator.domain.*;
 import com.mobileanalysis.orchestrator.repository.*;
+import com.mobileanalysis.orchestrator.util.EngineTopicMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -170,7 +171,7 @@ public class AnalysisOrchestrator {
      */
     private void writeToOutbox(UUID analysisId, AnalysisTaskEntity task, TaskEvent taskEvent) {
         try {
-            String topic = getTopicForEngineType(task.getEngineType().name());
+            String topic = EngineTopicMapper.getTopicForEngineType(task.getEngineType());
             String payload = objectMapper.writeValueAsString(taskEvent);
             
             OutboxEventEntity outboxEvent = OutboxEventEntity.builder()
@@ -191,18 +192,5 @@ public class AnalysisOrchestrator {
             log.error("Failed to serialize task event for outbox: taskId={}", task.getId(), e);
             throw new RuntimeException("Failed to write to outbox", e);
         }
-    }
-    
-    /**
-     * Map engine type to Kafka topic name.
-     */
-    private String getTopicForEngineType(String engineType) {
-        return switch (engineType) {
-            case "STATIC_ANALYSIS" -> "static-analysis-tasks";
-            case "DYNAMIC_ANALYSIS" -> "dynamic-analysis-tasks";
-            case "DECOMPILER" -> "decompiler-tasks";
-            case "SIGNATURE_CHECK" -> "signature-check-tasks";
-            default -> throw new IllegalArgumentException("Unknown engine type: " + engineType);
-        };
     }
 }
