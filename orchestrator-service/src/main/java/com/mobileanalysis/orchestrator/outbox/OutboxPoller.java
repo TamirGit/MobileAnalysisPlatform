@@ -15,6 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Outbox Poller - Scheduled task for transactional outbox pattern.
@@ -26,6 +28,7 @@ import java.util.List;
  * Pattern: Transactional Outbox (Microservices.io)
  * Polling Interval: 1 second (configurable)
  * Batch Size: 50 events per poll (configurable)
+ * Kafka Send Timeout: 5 seconds per event
  */
 @Component
 @Slf4j
@@ -38,6 +41,9 @@ public class OutboxPoller {
 
     @Value("${app.outbox.batch-size:50}")
     private int batchSize;
+    
+    @Value("${app.outbox.kafka-send-timeout-seconds:5}")
+    private int kafkaSendTimeoutSeconds;
 
     /**
      * Poll outbox table and publish unprocessed events to Kafka.
@@ -79,6 +85,7 @@ public class OutboxPoller {
 
     /**
      * Process single outbox event - publish to Kafka and mark as processed.
+     * Uses bounded timeout to prevent indefinite blocking.
      * 
      * @param event Outbox event to process
      */
@@ -92,8 +99,9 @@ public class OutboxPoller {
                 parsePayload(event.getPayload())
             );
 
-            // Publish to Kafka (synchronous for reliability)
-            kafkaTemplate.send(record).get(); // Blocks until success or failure
+            // Publish to Kafka with bounded timeout (non-blocking)
+            kafkaTemplate.send(record)
+                .get(kafkaSendTimeoutSeconds, TimeUnit.SECONDS);
 
             // Mark as processed
             event.setProcessed(true);
@@ -103,6 +111,10 @@ public class OutboxPoller {
             log.info("Outbox event published: id={}, topic={}, partitionKey={}", 
                 event.getId(), event.getTopic(), event.getPartitionKey());
 
+        } catch (TimeoutException e) {
+            log.warn("Kafka send timeout for outbox event ({}s), will retry next poll. eventId={}, topic={}",
+                kafkaSendTimeoutSeconds, event.getId(), event.getTopic());
+            // Don't mark as processed - will retry next poll
         } catch (Exception e) {
             log.warn("Failed to publish outbox event, will retry next poll. eventId={}, topic={}, error={}", 
                 event.getId(), event.getTopic(), e.getMessage());
