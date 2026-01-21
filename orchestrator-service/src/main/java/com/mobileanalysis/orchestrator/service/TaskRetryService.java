@@ -24,8 +24,16 @@ import java.util.UUID;
  * Service responsible for retrying failed tasks.
  *
  * Retry rules:
- * - If attempts < maxRetries (from TaskConfig), task is retried by dispatching a new TaskEvent to the engine topic.
- * - If attempts >= maxRetries, task stays FAILED and a DLQ event can be emitted for investigation.
+ * - maxRetries represents TOTAL attempts (original + retries), not additional retries
+ * - If task.attempts < maxRetries, task is retried by dispatching a new TaskEvent
+ * - If task.attempts >= maxRetries, task stays FAILED (retry budget exhausted)
+ * - Each retry increments the attempts counter
+ * 
+ * Example with maxRetries=3:
+ * - Attempt 1 (attempts=1): Original execution fails
+ * - Attempt 2 (attempts=2): First retry (eligible because 2 <= 3)
+ * - Attempt 3 (attempts=3): Second retry (eligible because 3 <= 3)
+ * - After attempt 3 fails: No more retries (3 >= 3, budget exhausted)
  */
 @Service
 @Slf4j
@@ -47,21 +55,38 @@ public class TaskRetryService {
 
     /**
      * Attempt to retry a task if it has remaining retry budget.
+     * 
+     * Note: maxRetries is the total number of attempts allowed (including original).
+     * The current attempts counter will be incremented for the retry.
+     * 
+     * @param task Task to potentially retry
+     * @param failureReason Reason why the task failed
      */
     @Transactional
     public void retryIfPossible(AnalysisTaskEntity task, String failureReason) {
         TaskConfigEntity taskConfig = taskConfigRepository.findById(task.getTaskConfigId())
                 .orElseThrow(() -> new IllegalStateException("Task config not found: " + task.getTaskConfigId()));
 
-        int maxRetries = taskConfig.getMaxRetries();
-        int nextAttempts = task.getAttempts() + 1;
+        int maxRetries = taskConfig.getMaxRetries(); // Total attempts allowed
+        int currentAttempts = task.getAttempts();
+        int nextAttempts = currentAttempts + 1;
 
+        // Check if we've exhausted the retry budget
+        // maxRetries is TOTAL attempts, so if nextAttempts > maxRetries, we're done
         if (nextAttempts > maxRetries) {
-            log.error("Retry budget exhausted for task {} (engine={}, attempts={}, maxRetries={}). Reason: {}",
-                    task.getId(), task.getEngineType(), task.getAttempts(), maxRetries, failureReason);
+            log.error("Retry budget exhausted for task {} (engine={}, currentAttempts={}, maxTotalAttempts={}). "
+                    + "Reason: {}",
+                    task.getId(), task.getEngineType(), currentAttempts, maxRetries, failureReason);
             // Keep FAILED; a dedicated DLQ flow can be added later.
             return;
         }
+
+        // We have retry budget remaining - prepare retry
+        int retriesUsed = currentAttempts; // Original attempt doesn't count as a retry
+        int retriesRemaining = maxRetries - nextAttempts;
+        
+        log.info("Retry eligible for task {} (engine={}, attempts={}/{}, retriesUsed={}, retriesRemaining={})",
+                task.getId(), task.getEngineType(), currentAttempts, maxRetries, retriesUsed, retriesRemaining);
 
         AnalysisEntity analysis = analysisRepository.findById(task.getAnalysisId())
                 .orElseThrow(() -> new IllegalStateException("Analysis not found: " + task.getAnalysisId()));
@@ -104,7 +129,7 @@ public class TaskRetryService {
             task.setCompletedAt(null);
             analysisTaskRepository.save(task);
 
-            log.warn("Retry scheduled for task {} (engine={}, attempts={}/{})",
+            log.warn("Retry scheduled for task {} (engine={}, nextAttempts={}, maxTotalAttempts={})",
                     task.getId(), task.getEngineType(), nextAttempts, maxRetries);
 
         } catch (JsonProcessingException e) {
