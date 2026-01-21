@@ -68,11 +68,12 @@ public class HeartbeatService {
     
     /**
      * Send heartbeat for the currently running task.
-     * Scheduled to run every 30 seconds.
+     * Scheduled to run every 30 seconds with 30 second initial delay.
+     * This creates consistent 30-second intervals: 30s, 60s, 90s, etc.
      * <p>
      * If no task is running, this is a no-op.
      */
-    @Scheduled(fixedDelay = 30000, initialDelay = 5000)
+    @Scheduled(fixedDelay = 30000, initialDelay = 30000)
     public void sendHeartbeat() {
         RunningTaskContext task = currentTask.get();
         
