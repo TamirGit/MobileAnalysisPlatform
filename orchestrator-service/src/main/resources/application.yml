@@ -44,7 +44,8 @@ spring:
         isolation.level: read_committed
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Note: value-serializer configured in Java config (KafkaConfig.java)
+      # Don't specify here to avoid conflicts with JsonSerializer
       acks: all
       retries: 3
     listener:
@@ -69,6 +70,7 @@ app:
     poll-interval-ms: 1000
     batch-size: 50
     cleanup-after-days: 7
+    kafka-send-timeout-seconds: 5
   
   heartbeat:
     check-interval-ms: 60000
