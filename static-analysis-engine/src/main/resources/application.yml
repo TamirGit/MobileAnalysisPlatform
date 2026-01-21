@@ -1,0 +1,22 @@
+spring:
+  application:
+    name: static-analysis-engine
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: static-analysis-engine-group
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+
+app:
+  kafka:
+    topics:
+      static-analysis-tasks: static-analysis-tasks
+      orchestrator-responses: orchestrator-responses
+      task-heartbeats: task-heartbeats
+
+logging:
+  level:
+    com.mobileanalysis: DEBUG
+    org.springframework.kafka: INFO
