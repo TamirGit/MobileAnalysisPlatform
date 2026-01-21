@@ -48,6 +48,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("Phase 1 Orchestrator Integration Tests")
 class OrchestratorIntegrationTest {
 
+    // Configure Docker host for WSL2 before Testcontainers initialization
+    static {
+        // For Windows with Docker Desktop WSL2 backend
+        // This must be set BEFORE @Container fields are initialized
+        System.setProperty("DOCKER_HOST", "tcp://localhost:2375");
+    }
+
     // Testcontainers - Real infrastructure (static fields managed by framework)
     @Container
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
