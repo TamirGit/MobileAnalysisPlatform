@@ -20,7 +20,7 @@
 
     <modules>
         <module>common</module>
-<!--        <module>engine-common</module>-->
+        <module>engine-common</module>
         <module>orchestrator-service</module>
 <!--        <module>static-analysis-engine</module>-->
 <!--        <module>dynamic-analysis-engine</module>-->
