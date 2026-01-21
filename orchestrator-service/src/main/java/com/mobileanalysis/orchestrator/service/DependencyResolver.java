@@ -60,7 +60,9 @@ public class DependencyResolver {
             if (areAllDependenciesMet(dependentTask)) {
                 log.info("All dependencies met for task: {}, dispatching", dependentTask.getId());
 
+                // Mark task as dispatched and increment attempts
                 dependentTask.setStatus(TaskStatus.DISPATCHED);
+                dependentTask.setAttempts(1); // First attempt for this task
                 analysisTaskRepository.save(dependentTask);
 
                 OutboxEventEntity outboxEvent = createTaskDispatchEvent(dependentTask, completedTask);
@@ -118,6 +120,7 @@ public class DependencyResolver {
                     .dependentTaskOutputPath(parentTask.getOutputPath())
                     .idempotencyKey(task.getIdempotencyKey())
                     .timeoutSeconds(taskConfig.getTimeoutSeconds())
+                    .attempts(task.getAttempts()) // Pass current attempts (should be 1 for first dispatch)
                     .timestamp(Instant.now())
                     .build();
 

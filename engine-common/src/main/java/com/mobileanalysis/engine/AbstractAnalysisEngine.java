@@ -47,8 +47,8 @@ public abstract class AbstractAnalysisEngine {
         MDC.put("engineType", getEngineType());
         
         try {
-            log.info("Received task event: taskId={}, analysisId={}, filePath={}", 
-                event.getTaskId(), event.getAnalysisId(), event.getFilePath());
+            log.info("Received task event: taskId={}, analysisId={}, filePath={}, attempts={}", 
+                event.getTaskId(), event.getAnalysisId(), event.getFilePath(), event.getAttempts());
             
             // Step 1: Validate task event
             validateTask(event);
@@ -113,6 +113,9 @@ public abstract class AbstractAnalysisEngine {
         if (event.getFilePath() == null || event.getFilePath().isBlank()) {
             throw new IllegalArgumentException("File path is required");
         }
+        if (event.getAttempts() == null || event.getAttempts() < 1) {
+            throw new IllegalArgumentException("Attempts must be >= 1");
+        }
         log.debug("Task validation passed: taskId={}", event.getTaskId());
     }
     
@@ -147,7 +150,7 @@ public abstract class AbstractAnalysisEngine {
             .status(TaskStatus.COMPLETED)
             .outputPath(outputPath)
             .errorMessage(null)
-            .attempts(event.getAttempts() != null ? event.getAttempts() : 1)
+            .attempts(event.getAttempts()) // Pass through attempts from task event
             .timestamp(Instant.now())
             .build();
         
@@ -167,7 +170,7 @@ public abstract class AbstractAnalysisEngine {
             .status(TaskStatus.FAILED)
             .outputPath(null)
             .errorMessage(errorMessage)
-            .attempts(event.getAttempts() != null ? event.getAttempts() : 1)
+            .attempts(event.getAttempts()) // Pass through attempts from task event
             .timestamp(Instant.now())
             .build();
         
@@ -186,8 +189,8 @@ public abstract class AbstractAnalysisEngine {
         
         try {
             kafkaTemplate.send(responseTopic, partitionKey, response);
-            log.info("Sent task response: taskId={}, status={}", 
-                response.getTaskId(), response.getStatus());
+            log.info("Sent task response: taskId={}, status={}, attempts={}", 
+                response.getTaskId(), response.getStatus(), response.getAttempts());
         } catch (Exception e) {
             log.error("Failed to send task response: taskId={}, status={}, error={}", 
                 response.getTaskId(), response.getStatus(), e.getMessage(), e);

@@ -123,7 +123,12 @@ public class AnalysisOrchestrator {
                 readyTasks.size(), analysisId);
             
             for (AnalysisTaskEntity task : readyTasks) {
-                // Create task event
+                // Mark task as dispatched and increment attempts
+                task.setStatus(TaskStatus.DISPATCHED);
+                task.setAttempts(1); // First attempt
+                analysisTaskRepository.save(task);
+                
+                // Create task event with attempt number
                 TaskEvent taskEvent = TaskEvent.builder()
                     .eventId(UUID.randomUUID())
                     .taskId(task.getId())
@@ -133,6 +138,7 @@ public class AnalysisOrchestrator {
                     .dependentTaskOutputPath(null) // No dependency
                     .idempotencyKey(task.getIdempotencyKey())
                     .timeoutSeconds(300) // Default, will be from config in Phase 2
+                    .attempts(1) // First attempt
                     .timestamp(Instant.now())
                     .build();
                 

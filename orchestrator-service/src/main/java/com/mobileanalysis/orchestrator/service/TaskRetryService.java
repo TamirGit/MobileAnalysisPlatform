@@ -102,6 +102,7 @@ public class TaskRetryService {
                 .dependentTaskOutputPath(dependentOutputPath)
                 .idempotencyKey(task.getIdempotencyKey())
                 .timeoutSeconds(taskConfig.getTimeoutSeconds())
+                .attempts(nextAttempts) // Pass next attempt number to engine
                 .timestamp(Instant.now())
                 .build();
 
