@@ -13,6 +13,40 @@ A scalable, event-driven security backend for analyzing mobile applications (.ap
 - **Containerization**: Docker, Docker Compose
 - **Utilities**: Lombok, Jackson, SLF4J + Logback
 
+## Version Alignment
+
+**CRITICAL**: All infrastructure component versions must be aligned across:
+1. `docker-compose.yml` (local development)
+2. Testcontainers in integration tests
+3. CI/CD pipeline configurations
+
+### Current Aligned Versions
+
+| Component | Version | Where Used |
+|-----------|---------|------------|
+| PostgreSQL | 16-alpine | docker-compose.yml, Testcontainers |
+| Redis | 7-alpine | docker-compose.yml, Testcontainers |
+| Kafka | 7.6.0 (cp-kafka) | docker-compose.yml, Testcontainers |
+
+### Version Update Checklist
+
+When upgrading any component version:
+
+- [ ] Update `docker-compose.yml`
+- [ ] Update Testcontainers in all `*IntegrationTest.java` files
+- [ ] Update this CLAUDE.md version table
+- [ ] Test locally with new version
+- [ ] Document any breaking changes
+
+**Example Grep Commands:**
+```bash
+# Find all Kafka version references
+grep -r "cp-kafka:" . --include="*.yml" --include="*.java"
+
+# Find all PostgreSQL version references
+grep -r "postgres:" . --include="*.yml" --include="*.java"
+```
+
 ## Project Structure
 
 ```
@@ -644,16 +678,16 @@ src/test/java/com/mobileanalysis/[service]/
 class AnalysisRepositoryIntegrationTest {
     
     @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16")
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine")
         .withDatabaseName("test_db");
     
     @Container
     static KafkaContainer kafka = new KafkaContainer(
-        DockerImageName.parse("confluentinc/cp-kafka:7.6.0")
+        DockerImageName.parse("confluentinc/cp-kafka:7.6.0")  // ⚠️ Match docker-compose.yml version!
     );
     
     @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7")
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
         .withExposedPorts(6379);
     
     @DynamicPropertySource
@@ -672,6 +706,8 @@ class AnalysisRepositoryIntegrationTest {
     }
 }
 ```
+
+**⚠️ CRITICAL**: Always ensure Testcontainers image versions match `docker-compose.yml`!
 
 **Assertions:**
 ```java
@@ -816,6 +852,7 @@ Before marking a PIV loop complete:
 - [ ] Conventional commits used
 - [ ] Code reviewed (self-review at minimum)
 - [ ] Documentation updated if needed
+- [ ] **Version alignment verified** (docker-compose.yml matches Testcontainers)
 
 ### PIV Loop Anti-Patterns
 
@@ -832,6 +869,7 @@ Before marking a PIV loop complete:
 - ❌ Redis failures blocking operations
 - ❌ Using random partition keys for Kafka events
 - ❌ Field injection with @Autowired
+- ❌ Version mismatches between docker-compose and Testcontainers
 
 **Instead:**
 - ✅ Small, incremental changes
@@ -846,6 +884,7 @@ Before marking a PIV loop complete:
 - ✅ Best-effort Redis updates with logging
 - ✅ analysisId as partition key for ordering
 - ✅ Constructor injection with @RequiredArgsConstructor
+- ✅ Version alignment across all configs
 
 ## Development Workflow
 
@@ -854,7 +893,8 @@ Before marking a PIV loop complete:
 2. Create feature branch: `feature/{scope}/{description}`
 3. Review relevant PRD sections
 4. Review architecture decisions in PRD Section 6
-5. Start PIV loop
+5. **Verify version alignment** (docker-compose.yml vs Testcontainers)
+6. Start PIV loop
 
 ### Daily Development
 1. Ensure Docker Compose is running
@@ -870,7 +910,8 @@ Before marking a PIV loop complete:
 4. Run integration tests
 5. Self-review code changes
 6. Verify all patterns followed (DB-first, manual commit, constructor injection, etc.)
-7. Update CLAUDE.md if conventions changed
+7. **Verify version alignment** (docker-compose.yml, Testcontainers, CI/CD)
+8. Update CLAUDE.md if conventions changed
 
 ### Code Review
 1. Check adherence to conventions
@@ -882,10 +923,11 @@ Before marking a PIV loop complete:
 7. Verify Kafka partition keys are analysisId
 8. Confirm manual Kafka commits
 9. Verify constructor injection used (not field injection)
-10. Test locally if possible
+10. **Check version alignment** across configs
+11. Test locally if possible
 
 ---
 
 **Last Updated**: January 21, 2026  
-**Version**: 1.2  
+**Version**: 1.3  
 **Maintainer**: Development Team
