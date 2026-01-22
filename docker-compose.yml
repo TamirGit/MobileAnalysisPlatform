@@ -86,7 +86,7 @@ services:
       echo "Waiting for Kafka to be ready..."
       sleep 5
       
-      echo "\n=== Creating Topics ==="
+      echo "=== Creating Topics ==="
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic file-events --partitions 3 --replication-factor 1
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic static-analysis-tasks --partitions 3 --replication-factor 1
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic dynamic-analysis-tasks --partitions 5 --replication-factor 1
@@ -98,7 +98,7 @@ services:
       
       echo "Topics created successfully."
       
-      echo "\n=== Initializing Consumer Groups ==="
+      echo "=== Initializing Consumer Groups ==="
       
       # Step 1: Create consumer groups by doing a quick poll
       # This registers the groups with Kafka
@@ -141,7 +141,7 @@ services:
       sleep 2
       
       # Step 2: Reset offsets to earliest (0) for all groups and topics
-      echo "\n=== Setting Consumer Group Offsets to Beginning ==="
+      echo "=== Setting Consumer Group Offsets to Beginning ==="
       
       echo "Setting orchestrator-service offsets..."
       kafka-consumer-groups --bootstrap-server kafka:29092 \
@@ -184,16 +184,16 @@ services:
         --reset-offsets --to-earliest \
         --execute 2>&1 || echo "Note: Group may not exist yet, will be created on first connection"
       
-      echo "\n=== Verifying Consumer Groups ==="
+      echo "=== Verifying Consumer Groups ==="
       kafka-consumer-groups --bootstrap-server kafka:29092 --list
       
-      echo "\n=== Consumer Group Details ==="
+      echo "=== Consumer Group Details ==="
       for group in orchestrator-service static-analysis-engine-group; do
-        echo "\n--- $group ---"
+        echo "--- $group ---"
         kafka-consumer-groups --bootstrap-server kafka:29092 --group $group --describe 2>&1 || echo "Group will be initialized on first use"
       done
       
-      echo "\n=== Kafka Initialization Complete ==="
+      echo "=== Kafka Initialization Complete ==="
       '
 
 volumes:
