@@ -32,7 +32,7 @@ public class HeartbeatConsumer {
      * Updates last_heartbeat_at timestamp for the task in a transaction.
      * 
      * @param event Heartbeat event from engine
-     * @param acknowledgment Kafka acknowledgment for manual commit
+     * @param acknowledgment Kafka acknowledgment for manual commit (never null with manual ack mode)
      */
     @KafkaListener(
         topics = "${app.kafka.topics.task-heartbeats:task-heartbeats}",
@@ -62,9 +62,8 @@ public class HeartbeatConsumer {
                 event.getTaskId(), event.getTimestamp());
             
             // Commit offset ONLY after successful transaction
-            if (acknowledgment != null) {
-                acknowledgment.acknowledge();
-            }
+            // Note: Acknowledgment is never null when using manual ack mode with @KafkaListener
+            acknowledgment.acknowledge();
             
         } catch (Exception e) {
             log.error("Failed to process heartbeat: taskId={}, error={}", 
