@@ -22,6 +22,9 @@ import java.util.UUID;
  * Terminal states:
  * - COMPLETED: all tasks are COMPLETED
  * - FAILED: at least one task is FAILED (after retry exhaustion)
+ *
+ * Fail-fast strategy:
+ * When any task fails, all remaining non-terminal tasks are cancelled.
  */
 @Service
 @Slf4j
@@ -91,12 +94,35 @@ public class AnalysisCompletionService {
     }
 
     private void markAsFailed(AnalysisEntity analysis, List<AnalysisTaskEntity> tasks) {
+        // Step 1: Cancel all non-terminal tasks (fail-fast strategy)
+        List<AnalysisTaskEntity> tasksToCancel = tasks.stream()
+                .filter(t -> !t.getStatus().isTerminal()) // PENDING, DISPATCHED, RUNNING
+                .toList();
+
+        if (!tasksToCancel.isEmpty()) {
+            log.info("Cancelling {} non-terminal tasks for failed analysis {}", 
+                    tasksToCancel.size(), analysis.getId());
+
+            for (AnalysisTaskEntity task : tasksToCancel) {
+                task.setStatus(TaskStatus.FAILED);
+                task.setErrorMessage("Cancelled due to sibling task failure");
+                task.setCompletedAt(Instant.now());
+                analysisTaskRepository.save(task);
+
+                log.info("Cancelled task {} ({}): was in {} state",
+                        task.getId(), task.getEngineType(), task.getStatus());
+            }
+        }
+
+        // Step 2: Mark analysis as FAILED
         analysis.setStatus(AnalysisStatus.FAILED);
         analysis.setCompletedAt(Instant.now());
         analysisRepository.save(analysis);
 
+        // Step 3: Log failure details
         List<AnalysisTaskEntity> failedTasks = tasks.stream()
                 .filter(t -> t.getStatus() == TaskStatus.FAILED)
+                .filter(t -> !"Cancelled due to sibling task failure".equals(t.getErrorMessage())) // Exclude cancelled tasks
                 .toList();
 
         log.error("Analysis {} marked as FAILED. {} task(s) failed:", analysis.getId(), failedTasks.size());
@@ -106,6 +132,10 @@ public class AnalysisCompletionService {
                     failedTask.getEngineType(),
                     failedTask.getErrorMessage() != null ? failedTask.getErrorMessage() : "No error message",
                     failedTask.getAttempts());
+        }
+
+        if (!tasksToCancel.isEmpty()) {
+            log.info("Cancelled {} additional task(s) to prevent wasted processing", tasksToCancel.size());
         }
     }
 
