@@ -78,7 +78,7 @@ class TaskRetryServiceTest {
     @Test
     void retryIfPossible_withinBudget_createsRetry() {
         // Given
-        when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(failedTask));
+        // Note: No need to stub analysisTaskRepository.findById() - task is passed as parameter
         when(taskConfigRepository.findById(1L)).thenReturn(Optional.of(taskConfig));
         when(analysisRepository.findById(failedTask.getAnalysisId())).thenReturn(Optional.of(analysis));
 
