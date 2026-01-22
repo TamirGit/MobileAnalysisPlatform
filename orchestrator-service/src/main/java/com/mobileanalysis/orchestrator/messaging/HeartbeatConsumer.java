@@ -29,7 +29,7 @@ public class HeartbeatConsumer {
     
     /**
      * Listen for heartbeat events from task-heartbeats topic.
-     * Updates last_heartbeat_at timestamp for the task.
+     * Updates last_heartbeat_at timestamp for the task in a transaction.
      * 
      * @param event Heartbeat event from engine
      * @param acknowledgment Kafka acknowledgment for manual commit
@@ -39,6 +39,7 @@ public class HeartbeatConsumer {
         groupId = "${spring.kafka.consumer.group-id}",
         containerFactory = "kafkaListenerContainerFactory"
     )
+    @Transactional // Transaction starts here (entry point from outside)
     public void handleHeartbeat(@Payload HeartbeatEvent event, Acknowledgment acknowledgment) {
         // Set MDC correlation IDs for logging
         MDC.put("analysisId", event.getAnalysisId().toString());
@@ -48,10 +49,19 @@ public class HeartbeatConsumer {
             log.debug("Received heartbeat: analysisId={}, taskId={}, engineType={}", 
                 event.getAnalysisId(), event.getTaskId(), event.getEngineType());
             
-            // Update heartbeat timestamp
-            updateHeartbeat(event);
+            // Find task
+            AnalysisTaskEntity task = taskRepository.findById(event.getTaskId())
+                .orElseThrow(() -> new IllegalArgumentException(
+                    "Task not found: " + event.getTaskId()));
             
-            // Commit offset after successful update
+            // Update last heartbeat timestamp
+            task.setLastHeartbeatAt(event.getTimestamp());
+            taskRepository.save(task);
+            
+            log.debug("Updated heartbeat for task: {}, timestamp: {}", 
+                event.getTaskId(), event.getTimestamp());
+            
+            // Commit offset ONLY after successful transaction
             if (acknowledgment != null) {
                 acknowledgment.acknowledge();
             }
@@ -60,29 +70,10 @@ public class HeartbeatConsumer {
             log.error("Failed to process heartbeat: taskId={}, error={}", 
                 event.getTaskId(), e.getMessage(), e);
             // Don't acknowledge - Kafka will redeliver
+            // Transaction will be rolled back automatically
             throw new RuntimeException("Heartbeat processing failed", e);
         } finally {
             MDC.clear();
         }
-    }
-    
-    /**
-     * Update the last_heartbeat_at timestamp for a task.
-     * This is a simple update operation - no complex logic needed.
-     * 
-     * @param event Heartbeat event
-     */
-    @Transactional
-    public void updateHeartbeat(HeartbeatEvent event) {
-        AnalysisTaskEntity task = taskRepository.findById(event.getTaskId())
-            .orElseThrow(() -> new IllegalArgumentException(
-                "Task not found: " + event.getTaskId()));
-        
-        // Update last heartbeat timestamp
-        task.setLastHeartbeatAt(event.getTimestamp());
-        taskRepository.save(task);
-        
-        log.debug("Updated heartbeat for task: {}, timestamp: {}", 
-            event.getTaskId(), event.getTimestamp());
     }
 }
