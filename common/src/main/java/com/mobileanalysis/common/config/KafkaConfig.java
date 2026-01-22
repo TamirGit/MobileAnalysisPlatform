@@ -1,6 +1,7 @@
 package com.mobileanalysis.common.config;
 
 import com.mobileanalysis.common.events.FileEvent;
+import com.mobileanalysis.common.events.TaskResponseEvent;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -96,6 +97,38 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, FileEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(fileEventConsumerFactory());
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL); // Manual commit
+        return factory;
+    }
+
+    // Consumer configuration for TaskResponseEvent (JSON deserialization)
+    @Bean
+    public Map<String, Object> taskResponseConsumerConfigs() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false); // Manual commit for reliability
+        props.put(JsonDeserializer.TRUSTED_PACKAGES, "com.mobileanalysis.common.events");
+        props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, TaskResponseEvent.class.getName());
+        props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false); // Don't require __TypeId__ header
+        return props;
+    }
+
+    @Bean
+    public ConsumerFactory<String, TaskResponseEvent> taskResponseConsumerFactory() {
+        return new DefaultKafkaConsumerFactory<>(
+            taskResponseConsumerConfigs(),
+            new StringDeserializer(),
+            new JsonDeserializer<>(TaskResponseEvent.class, false)
+        );
+    }
+
+    @Bean(name = "taskResponseKafkaListenerContainerFactory")
+    public ConcurrentKafkaListenerContainerFactory<String, TaskResponseEvent> taskResponseKafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, TaskResponseEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(taskResponseConsumerFactory());
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL); // Manual commit
         return factory;
     }
