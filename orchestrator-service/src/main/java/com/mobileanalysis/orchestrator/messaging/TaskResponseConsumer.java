@@ -53,7 +53,7 @@ public class TaskResponseConsumer {
      * All operations are in a single transaction - succeed together or rollback together.
      * 
      * @param event Task response event from engine
-     * @param acknowledgment Kafka acknowledgment for manual commit
+     * @param acknowledgment Kafka acknowledgment for manual commit (never null with manual ack mode)
      */
     @KafkaListener(
         topics = "${app.kafka.topics.orchestrator-responses:orchestrator-responses}",
@@ -114,11 +114,10 @@ public class TaskResponseConsumer {
             // For Phase 2, we focus on core functionality
             
             // Commit offset ONLY after successful transaction
-            if (acknowledgment != null) {
-                acknowledgment.acknowledge();
-                log.info("Task response processed successfully and committed: taskId={}, status={}", 
-                    event.getTaskId(), event.getStatus());
-            }
+            // Note: Acknowledgment is never null when using manual ack mode with @KafkaListener
+            acknowledgment.acknowledge();
+            log.info("Task response processed successfully and committed: taskId={}, status={}", 
+                event.getTaskId(), event.getStatus());
             
         } catch (Exception e) {
             log.error("Failed to process task response: taskId={}, error={}", 
