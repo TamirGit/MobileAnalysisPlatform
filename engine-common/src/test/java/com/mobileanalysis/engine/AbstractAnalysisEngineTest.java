@@ -1,5 +1,6 @@
 package com.mobileanalysis.engine;
 
+import com.mobileanalysis.common.domain.EngineType;
 import com.mobileanalysis.common.domain.TaskStatus;
 import com.mobileanalysis.common.events.TaskEvent;
 import com.mobileanalysis.common.events.TaskResponseEvent;
@@ -47,7 +48,7 @@ class AbstractAnalysisEngineTest {
             .taskId(1L)
             .analysisId(UUID.randomUUID())
             .filePath("/path/to/file.apk")
-            .engineType("TEST_ENGINE")
+            .engineType(EngineType.SIGNATURE_CHECK)
             .idempotencyKey(UUID.randomUUID())
             .timeoutSeconds(300)
             .build();
