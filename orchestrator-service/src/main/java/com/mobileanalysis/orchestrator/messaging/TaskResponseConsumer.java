@@ -50,7 +50,7 @@ public class TaskResponseConsumer {
     @KafkaListener(
         topics = "${app.kafka.topics.orchestrator-responses:orchestrator-responses}",
         groupId = "${spring.kafka.consumer.group-id}",
-        containerFactory = "kafkaListenerContainerFactory"
+        containerFactory = "taskResponseKafkaListenerContainerFactory"
     )
     public void handleTaskResponse(@Payload TaskResponseEvent event, Acknowledgment acknowledgment) {
         // Set MDC correlation IDs for logging
