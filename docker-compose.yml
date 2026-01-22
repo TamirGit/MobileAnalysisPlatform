@@ -148,10 +148,10 @@ services:
       echo "Consumer groups initialized successfully."
       
       # Verify consumer groups were created
-      echo "\nVerifying consumer groups:"
+      echo "Verifying consumer groups:"
       kafka-consumer-groups --bootstrap-server kafka:29092 --list
       
-      echo "\nKafka initialization complete!"
+      echo "Kafka initialization complete!"
       '
 
 volumes:
