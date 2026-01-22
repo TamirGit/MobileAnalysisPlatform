@@ -61,8 +61,9 @@ public class DependencyResolver {
             if (areAllDependenciesMet(dependentTask)) {
                 log.info("All dependencies met for task: {}, dispatching", dependentTask.getId());
 
-                // Mark task as dispatched and increment attempts
+                // Mark task as dispatched, set started timestamp, and increment attempts
                 dependentTask.setStatus(TaskStatus.DISPATCHED);
+                dependentTask.setStartedAt(Instant.now()); // Track when task execution begins
                 dependentTask.setAttempts(1); // First attempt for this task
                 analysisTaskRepository.save(dependentTask);
 
