@@ -18,11 +18,15 @@ import java.util.concurrent.atomic.AtomicReference;
  * Heartbeats indicate that a task is still actively being processed.
  * <p>
  * Orchestrator uses these heartbeats to detect stale/zombie tasks.
- * If no heartbeat is received for 2+ minutes, the task is marked as failed.
+ * If no heartbeat is received for the configured stale threshold (default 2 minutes),
+ * the task is marked as failed.
  * <p>
  * Heartbeat schedule:
  * - Immediate heartbeat when task starts (t=0s)
- * - Periodic heartbeats every 30 seconds (t=30s, 60s, 90s, ...)
+ * - Periodic heartbeats at configured interval (default: every 30 seconds)
+ * <p>
+ * Configuration:
+ * - app.engine.heartbeat-interval-ms: Interval between heartbeats (default: 30000ms)
  */
 @Service
 @Slf4j
@@ -77,14 +81,18 @@ public class HeartbeatService {
     
     /**
      * Send periodic heartbeat for the currently running task.
-     * Scheduled to run every 30 seconds after 30 second initial delay.
-     * This creates consistent 30-second intervals: 30s, 60s, 90s, etc.
+     * Scheduled to run at the configured interval (default: 30 seconds).
+     * The interval is configurable via app.engine.heartbeat-interval-ms property.
+     * <p>
      * Combined with the immediate heartbeat in startHeartbeat(),
-     * the full schedule is: 0s, 30s, 60s, 90s, ...
+     * the full schedule is: 0s, 30s, 60s, 90s, ... (using default interval)
      * <p>
      * If no task is running, this is a no-op.
      */
-    @Scheduled(fixedDelay = 30000, initialDelay = 30000)
+    @Scheduled(
+        fixedDelayString = "${app.engine.heartbeat-interval-ms:30000}",
+        initialDelayString = "${app.engine.heartbeat-interval-ms:30000}"
+    )
     public void sendHeartbeat() {
         sendHeartbeatEvent();
     }
