@@ -1,5 +1,6 @@
 package com.mobileanalysis.orchestrator.service;
 
+import com.mobileanalysis.common.domain.EngineType;
 import com.mobileanalysis.common.domain.TaskStatus;
 import com.mobileanalysis.orchestrator.domain.AnalysisTaskEntity;
 import com.mobileanalysis.orchestrator.repository.AnalysisTaskRepository;
@@ -39,7 +40,7 @@ class HeartbeatMonitorTest {
         staleTask.setId(1L);
         staleTask.setAnalysisId(UUID.randomUUID());
         staleTask.setStatus(TaskStatus.RUNNING);
-        staleTask.setEngineType("STATIC_ANALYSIS");
+        staleTask.setEngineType(EngineType.STATIC_ANALYSIS);
         staleTask.setLastHeartbeatAt(Instant.now().minus(5, ChronoUnit.MINUTES));
         staleTask.setAttempts(1);
     }
@@ -62,7 +63,7 @@ class HeartbeatMonitorTest {
         ));
 
         verify(taskRetryService).retryIfPossible(
-            argThat(task -> task.getId().equals(1L)),
+            argThat((AnalysisTaskEntity task) -> task.getId().equals(1L)),
             argThat(reason -> reason.contains("no heartbeat"))
         );
     }
@@ -78,7 +79,7 @@ class HeartbeatMonitorTest {
 
         // Then
         verify(analysisTaskRepository, never()).save(any());
-        verify(taskRetryService, never()).retryIfPossible(any(), any());
+        verify(taskRetryService, never()).retryIfPossible(any(AnalysisTaskEntity.class), any());
     }
 
     @Test
@@ -88,6 +89,7 @@ class HeartbeatMonitorTest {
         staleTask2.setId(2L);
         staleTask2.setAnalysisId(UUID.randomUUID());
         staleTask2.setStatus(TaskStatus.RUNNING);
+        staleTask2.setEngineType(EngineType.STATIC_ANALYSIS);
         staleTask2.setLastHeartbeatAt(Instant.now().minus(3, ChronoUnit.MINUTES));
 
         when(analysisTaskRepository.findStaleRunningTasks(any(Instant.class)))
@@ -98,6 +100,6 @@ class HeartbeatMonitorTest {
 
         // Then
         verify(analysisTaskRepository, times(2)).save(any());
-        verify(taskRetryService, times(2)).retryIfPossible(any(), any());
+        verify(taskRetryService, times(2)).retryIfPossible(any(AnalysisTaskEntity.class), any());
     }
 }

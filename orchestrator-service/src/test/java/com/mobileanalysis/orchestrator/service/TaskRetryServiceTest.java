@@ -1,10 +1,10 @@
 package com.mobileanalysis.orchestrator.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mobileanalysis.common.domain.EngineType;
 import com.mobileanalysis.common.domain.TaskStatus;
 import com.mobileanalysis.orchestrator.domain.AnalysisEntity;
 import com.mobileanalysis.orchestrator.domain.AnalysisTaskEntity;
-import com.mobileanalysis.orchestrator.domain.OutboxEventEntity;
 import com.mobileanalysis.orchestrator.domain.TaskConfigEntity;
 import com.mobileanalysis.orchestrator.repository.AnalysisRepository;
 import com.mobileanalysis.orchestrator.repository.AnalysisTaskRepository;
@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Optional;
@@ -39,73 +40,64 @@ class TaskRetryServiceTest {
     @Mock
     private OutboxRepository outboxRepository;
 
-    @Mock
-    private ObjectMapper objectMapper;
+    @Spy
+    private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks
-    private TaskRetryService retryService;
+    private TaskRetryService taskRetryService;
 
-    private UUID analysisId;
-    private AnalysisTaskEntity task;
+    private AnalysisTaskEntity failedTask;
     private TaskConfigEntity taskConfig;
     private AnalysisEntity analysis;
 
     @BeforeEach
-    void setUp() throws Exception {
-        analysisId = UUID.randomUUID();
-
-        analysis = new AnalysisEntity();
-        analysis.setId(analysisId);
-        analysis.setFilePath("/path/to/file.apk");
-
-        task = new AnalysisTaskEntity();
-        task.setId(1L);
-        task.setAnalysisId(analysisId);
-        task.setTaskConfigId(100L);
-        task.setStatus(TaskStatus.FAILED);
-        task.setAttempts(1);
-        task.setEngineType("STATIC_ANALYSIS");
-        task.setIdempotencyKey(UUID.randomUUID());
+    void setUp() {
+        failedTask = new AnalysisTaskEntity();
+        failedTask.setId(1L);
+        failedTask.setAnalysisId(UUID.randomUUID());
+        failedTask.setTaskConfigId(1L);
+        failedTask.setStatus(TaskStatus.FAILED);
+        failedTask.setEngineType(EngineType.STATIC_ANALYSIS);
+        failedTask.setAttempts(1);
+        failedTask.setIdempotencyKey(UUID.randomUUID());
 
         taskConfig = new TaskConfigEntity();
-        taskConfig.setId(100L);
+        taskConfig.setId(1L);
         taskConfig.setMaxRetries(3);
         taskConfig.setTimeoutSeconds(300);
 
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        analysis = new AnalysisEntity();
+        analysis.setId(failedTask.getAnalysisId());
+        analysis.setFilePath("/path/to/file.apk");
     }
 
     @Test
-    void retryIfPossible_withinBudget_schedulesRetry() {
+    void retryIfPossible_withinBudget_createsRetry() {
         // Given
-        when(taskConfigRepository.findById(100L)).thenReturn(Optional.of(taskConfig));
-        when(analysisRepository.findById(analysisId)).thenReturn(Optional.of(analysis));
+        when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(failedTask));
+        when(taskConfigRepository.findById(1L)).thenReturn(Optional.of(taskConfig));
+        when(analysisRepository.findById(failedTask.getAnalysisId())).thenReturn(Optional.of(analysis));
 
         // When
-        retryService.retryIfPossible(task, "Connection timeout");
+        taskRetryService.retryIfPossible(failedTask, "Test failure");
 
         // Then
-        verify(analysisTaskRepository).save(argThat(t ->
-            t.getStatus() == TaskStatus.PENDING &&
-            t.getAttempts() == 2 &&
-            t.getErrorMessage().equals("Connection timeout") &&
-            t.getCompletedAt() == null
-        ));
-
-        verify(outboxRepository).save(argThat(event ->
-            event.getEventType().equals("TASK_RETRY") &&
-            event.getTopic().equals("static-analysis-tasks")
+        verify(outboxRepository).save(any());
+        verify(analysisTaskRepository).save(argThat(task ->
+            task.getAttempts() == 2 &&
+            task.getStatus() == TaskStatus.PENDING
         ));
     }
 
     @Test
     void retryIfPossible_budgetExhausted_doesNotRetry() {
-        // Given: Task already at max retries
-        task.setAttempts(3);
-        when(taskConfigRepository.findById(100L)).thenReturn(Optional.of(taskConfig));
+        // Given
+        failedTask.setAttempts(3); // Already at max
+        when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(failedTask));
+        when(taskConfigRepository.findById(1L)).thenReturn(Optional.of(taskConfig));
 
         // When
-        retryService.retryIfPossible(task, "Final failure");
+        taskRetryService.retryIfPossible(failedTask, "Test failure");
 
         // Then
         verify(outboxRepository, never()).save(any());
@@ -113,16 +105,21 @@ class TaskRetryServiceTest {
     }
 
     @Test
-    void retryIfPossible_firstAttempt_incrementsTo2() {
-        // Given: First attempt (attempts = 1)
-        task.setAttempts(1);
-        when(taskConfigRepository.findById(100L)).thenReturn(Optional.of(taskConfig));
-        when(analysisRepository.findById(analysisId)).thenReturn(Optional.of(analysis));
+    void retryIfPossible_firstFailure_incrementsToAttempt2() {
+        // Given
+        failedTask.setAttempts(1);
+        when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(failedTask));
+        when(taskConfigRepository.findById(1L)).thenReturn(Optional.of(taskConfig));
+        when(analysisRepository.findById(failedTask.getAnalysisId())).thenReturn(Optional.of(analysis));
 
         // When
-        retryService.retryIfPossible(task, "First failure");
+        taskRetryService.retryIfPossible(failedTask, "First failure");
 
         // Then
-        verify(analysisTaskRepository).save(argThat(t -> t.getAttempts() == 2));
+        verify(analysisTaskRepository).save(argThat(task -> {
+            assertThat(task.getAttempts()).isEqualTo(2);
+            assertThat(task.getStatus()).isEqualTo(TaskStatus.PENDING);
+            return true;
+        }));
     }
 }

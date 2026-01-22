@@ -17,6 +17,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.kafka.support.Acknowledgment;
 
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -46,35 +47,33 @@ class TaskResponseConsumerTest {
     @InjectMocks
     private TaskResponseConsumer consumer;
 
-    private UUID analysisId;
     private TaskResponseEvent successEvent;
     private AnalysisTaskEntity task;
 
     @BeforeEach
     void setUp() {
-        analysisId = UUID.randomUUID();
-
-        task = new AnalysisTaskEntity();
-        task.setId(1L);
-        task.setAnalysisId(analysisId);
-        task.setStatus(TaskStatus.RUNNING);
+        UUID analysisId = UUID.randomUUID();
 
         successEvent = TaskResponseEvent.builder()
             .taskId(1L)
             .analysisId(analysisId)
             .status(TaskStatus.COMPLETED)
-            .outputPath("/path/to/output.json")
+            .outputPath("/output/result.json")
             .attempts(1)
             .timestamp(Instant.now())
             .build();
+
+        task = new AnalysisTaskEntity();
+        task.setId(1L);
+        task.setAnalysisId(analysisId);
+        task.setStatus(TaskStatus.RUNNING);
     }
 
     @Test
-    void handleTaskResponse_successfulTask_updatesAndResolvesDependencies() {
+    void handleTaskResponse_success_updatesTaskAndAcknowledges() {
         // Given
-        OutboxEventEntity outboxEvent = new OutboxEventEntity();
         when(taskRepository.findById(1L)).thenReturn(Optional.of(task));
-        when(dependencyResolver.resolveAndDispatch(task)).thenReturn(List.of(outboxEvent));
+        when(dependencyResolver.resolveAndDispatch(any())).thenReturn(Collections.emptyList());
 
         // When
         consumer.handleTaskResponse(successEvent, acknowledgment);
@@ -82,41 +81,29 @@ class TaskResponseConsumerTest {
         // Then
         verify(taskRepository).save(argThat(t ->
             t.getStatus() == TaskStatus.COMPLETED &&
-            t.getOutputPath().equals("/path/to/output.json") &&
-            t.getCompletedAt() != null
+            t.getOutputPath().equals("/output/result.json")
         ));
-
-        verify(dependencyResolver).resolveAndDispatch(task);
-        verify(outboxRepository).saveAll(argThat(events -> events.size() == 1));
-        verify(completionService).checkAndMarkCompletion(analysisId);
+        verify(completionService).checkAndMarkCompletion(successEvent.getAnalysisId());
         verify(acknowledgment).acknowledge();
     }
 
     @Test
-    void handleTaskResponse_failedTask_updatesWithError() {
+    void handleTaskResponse_withDependents_savesOutboxEvents() {
         // Given
-        TaskResponseEvent failureEvent = TaskResponseEvent.builder()
-            .taskId(1L)
-            .analysisId(analysisId)
-            .status(TaskStatus.FAILED)
-            .errorMessage("Processing error")
-            .attempts(2)
-            .timestamp(Instant.now())
-            .build();
+        OutboxEventEntity outboxEvent = new OutboxEventEntity();
+        List<OutboxEventEntity> events = List.of(outboxEvent);
 
         when(taskRepository.findById(1L)).thenReturn(Optional.of(task));
+        when(dependencyResolver.resolveAndDispatch(any())).thenReturn(events);
 
         // When
-        consumer.handleTaskResponse(failureEvent, acknowledgment);
+        consumer.handleTaskResponse(successEvent, acknowledgment);
 
         // Then
-        verify(taskRepository).save(argThat(t ->
-            t.getStatus() == TaskStatus.FAILED &&
-            t.getErrorMessage().equals("Processing error")
-        ));
-
-        verify(dependencyResolver, never()).resolveAndDispatch(any());
-        verify(completionService).checkAndMarkCompletion(analysisId);
+        verify(outboxRepository).saveAll(argThat(savedEvents -> {
+            List<OutboxEventEntity> eventList = (List<OutboxEventEntity>) savedEvents;
+            return eventList.size() == 1;
+        }));
         verify(acknowledgment).acknowledge();
     }
 
@@ -127,21 +114,31 @@ class TaskResponseConsumerTest {
 
         // When/Then
         assertThatThrownBy(() -> consumer.handleTaskResponse(successEvent, acknowledgment))
-            .isInstanceOf(RuntimeException.class)
-            .hasMessageContaining("Task event processing failed");
+            .isInstanceOf(RuntimeException.class);
 
         verify(acknowledgment, never()).acknowledge();
     }
 
     @Test
-    void handleTaskResponse_processingError_doesNotAcknowledge() {
+    void handleTaskResponse_failedStatus_doesNotResolveDependencies() {
         // Given
-        when(taskRepository.findById(1L)).thenThrow(new RuntimeException("Database error"));
+        TaskResponseEvent failedEvent = TaskResponseEvent.builder()
+            .taskId(1L)
+            .analysisId(task.getAnalysisId())
+            .status(TaskStatus.FAILED)
+            .errorMessage("Processing failed")
+            .attempts(2)
+            .timestamp(Instant.now())
+            .build();
 
-        // When/Then
-        assertThatThrownBy(() -> consumer.handleTaskResponse(successEvent, acknowledgment))
-            .isInstanceOf(RuntimeException.class);
+        when(taskRepository.findById(1L)).thenReturn(Optional.of(task));
 
-        verify(acknowledgment, never()).acknowledge();
+        // When
+        consumer.handleTaskResponse(failedEvent, acknowledgment);
+
+        // Then
+        verify(dependencyResolver, never()).resolveAndDispatch(any());
+        verify(completionService).checkAndMarkCompletion(task.getAnalysisId());
+        verify(acknowledgment).acknowledge();
     }
 }

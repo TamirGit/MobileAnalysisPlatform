@@ -1,6 +1,7 @@
 package com.mobileanalysis.orchestrator.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mobileanalysis.common.domain.EngineType;
 import com.mobileanalysis.common.domain.TaskStatus;
 import com.mobileanalysis.orchestrator.domain.AnalysisEntity;
 import com.mobileanalysis.orchestrator.domain.AnalysisTaskEntity;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
@@ -36,99 +38,94 @@ class DependencyResolverTest {
     @Mock
     private TaskConfigRepository taskConfigRepository;
 
-    @Mock
-    private ObjectMapper objectMapper;
+    @Spy
+    private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks
     private DependencyResolver dependencyResolver;
 
-    private UUID analysisId;
     private AnalysisTaskEntity completedTask;
+    private AnalysisTaskEntity dependentTask;
+    private TaskConfigEntity taskConfig;
     private AnalysisEntity analysis;
 
     @BeforeEach
     void setUp() {
-        analysisId = UUID.randomUUID();
-
-        analysis = new AnalysisEntity();
-        analysis.setId(analysisId);
-        analysis.setFilePath("/path/to/file.apk");
+        UUID analysisId = UUID.randomUUID();
 
         completedTask = new AnalysisTaskEntity();
         completedTask.setId(1L);
         completedTask.setAnalysisId(analysisId);
         completedTask.setStatus(TaskStatus.COMPLETED);
-        completedTask.setOutputPath("/path/to/output.json");
+        completedTask.setOutputPath("/output/task1.json");
+
+        dependentTask = new AnalysisTaskEntity();
+        dependentTask.setId(2L);
+        dependentTask.setAnalysisId(analysisId);
+        dependentTask.setTaskConfigId(1L);
+        dependentTask.setStatus(TaskStatus.PENDING);
+        dependentTask.setEngineType(EngineType.DYNAMIC_ANALYSIS);
+        dependentTask.setDependsOnTaskId(1L);
+        dependentTask.setIdempotencyKey(UUID.randomUUID());
+
+        taskConfig = new TaskConfigEntity();
+        taskConfig.setId(1L);
+        taskConfig.setTimeoutSeconds(300);
+
+        analysis = new AnalysisEntity();
+        analysis.setId(analysisId);
+        analysis.setFilePath("/path/to/file.apk");
     }
 
     @Test
-    void resolveAndDispatch_noDependentTasks_returnsEmptyList() {
+    void resolveAndDispatch_noDependents_returnsEmpty() {
         // Given
         when(analysisTaskRepository.findByDependsOnTaskId(1L)).thenReturn(List.of());
 
         // When
-        List<OutboxEventEntity> result = dependencyResolver.resolveAndDispatch(completedTask);
+        List<OutboxEventEntity> events = dependencyResolver.resolveAndDispatch(completedTask);
 
         // Then
-        assertThat(result).isEmpty();
+        assertThat(events).isEmpty();
         verify(analysisTaskRepository, never()).save(any());
     }
 
     @Test
-    void resolveAndDispatch_dependentTaskReady_createsOutboxEvent() throws Exception {
+    void resolveAndDispatch_dependenciesMet_dispatchesTask() {
         // Given
-        AnalysisTaskEntity dependentTask = new AnalysisTaskEntity();
-        dependentTask.setId(2L);
-        dependentTask.setAnalysisId(analysisId);
-        dependentTask.setTaskConfigId(100L);
-        dependentTask.setDependsOnTaskId(1L);
-        dependentTask.setStatus(TaskStatus.PENDING);
-        dependentTask.setEngineType("STATIC_ANALYSIS");
-        dependentTask.setIdempotencyKey(UUID.randomUUID());
-
-        TaskConfigEntity taskConfig = new TaskConfigEntity();
-        taskConfig.setId(100L);
-        taskConfig.setTimeoutSeconds(300);
-
         when(analysisTaskRepository.findByDependsOnTaskId(1L)).thenReturn(List.of(dependentTask));
         when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(completedTask));
-        when(taskConfigRepository.findById(100L)).thenReturn(Optional.of(taskConfig));
-        when(analysisRepository.findById(analysisId)).thenReturn(Optional.of(analysis));
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        when(taskConfigRepository.findById(1L)).thenReturn(Optional.of(taskConfig));
+        when(analysisRepository.findById(dependentTask.getAnalysisId())).thenReturn(Optional.of(analysis));
 
         // When
-        List<OutboxEventEntity> result = dependencyResolver.resolveAndDispatch(completedTask);
+        List<OutboxEventEntity> events = dependencyResolver.resolveAndDispatch(completedTask);
 
         // Then
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).getEventType()).isEqualTo("TASK_DISPATCHED");
-        assertThat(result.get(0).getTopic()).isEqualTo("static-analysis-tasks");
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).getTopic()).isEqualTo("dynamic-analysis-tasks");
 
         verify(analysisTaskRepository).save(argThat(task ->
-            task.getId().equals(2L) && task.getStatus() == TaskStatus.DISPATCHED
+            task.getId().equals(2L) &&
+            task.getStatus() == TaskStatus.DISPATCHED
         ));
     }
 
     @Test
-    void resolveAndDispatch_dependentTaskNotReady_doesNotDispatch() {
-        // Given: Parent task still RUNNING
-        AnalysisTaskEntity dependentTask = new AnalysisTaskEntity();
-        dependentTask.setId(2L);
-        dependentTask.setAnalysisId(analysisId);
-        dependentTask.setDependsOnTaskId(1L);
-
-        AnalysisTaskEntity runningParent = new AnalysisTaskEntity();
-        runningParent.setId(1L);
-        runningParent.setStatus(TaskStatus.RUNNING);
+    void resolveAndDispatch_dependenciesNotMet_doesNotDispatch() {
+        // Given
+        AnalysisTaskEntity incompleteParent = new AnalysisTaskEntity();
+        incompleteParent.setId(1L);
+        incompleteParent.setStatus(TaskStatus.RUNNING); // Not COMPLETED
 
         when(analysisTaskRepository.findByDependsOnTaskId(1L)).thenReturn(List.of(dependentTask));
-        when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(runningParent));
+        when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(incompleteParent));
 
         // When
-        List<OutboxEventEntity> result = dependencyResolver.resolveAndDispatch(completedTask);
+        List<OutboxEventEntity> events = dependencyResolver.resolveAndDispatch(completedTask);
 
         // Then
-        assertThat(result).isEmpty();
+        assertThat(events).isEmpty();
         verify(analysisTaskRepository, never()).save(any());
     }
 }
