@@ -2,6 +2,7 @@ package com.mobileanalysis.common.config;
 
 import com.mobileanalysis.common.events.FileEvent;
 import com.mobileanalysis.common.events.TaskResponseEvent;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -12,13 +13,26 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.*;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.util.backoff.FixedBackOff;
 
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Shared Kafka configuration for all services.
+ * 
+ * Features:
+ * - ErrorHandlingDeserializer wraps JsonDeserializer to catch malformed messages
+ * - DefaultErrorHandler logs errors and commits offset (no infinite retry)
+ * - Manual acknowledgment for exactly-once semantics
+ * - Separate factories for FileEvent, TaskResponseEvent, and String messages
+ */
 @Configuration
+@Slf4j
 public class KafkaConfig {
 
     @Value("${spring.kafka.bootstrap-servers}")
@@ -33,6 +47,9 @@ public class KafkaConfig {
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        props.put(ProducerConfig.ACKS_CONFIG, "all");
+        props.put(ProducerConfig.RETRIES_CONFIG, 3);
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         return props;
     }
 
@@ -54,6 +71,9 @@ public class KafkaConfig {
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
         props.put(JsonSerializer.ADD_TYPE_INFO_HEADERS, false); // Don't add __TypeId__ header
+        props.put(ProducerConfig.ACKS_CONFIG, "all");
+        props.put(ProducerConfig.RETRIES_CONFIG, 3);
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         return props;
     }
 
@@ -69,17 +89,27 @@ public class KafkaConfig {
 
     // ========== CONSUMER CONFIGURATIONS ==========
 
-    // Consumer configuration for FileEvent (JSON deserialization)
+    // Consumer configuration for FileEvent (JSON deserialization with error handling)
     @Bean
     public Map<String, Object> fileEventConsumerConfigs() {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false); // Manual commit for reliability
+        props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
+        
+        // Use ErrorHandlingDeserializer to wrap JsonDeserializer
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+        
+        // Delegate to these deserializers
+        props.put(ErrorHandlingDeserializer.KEY_DESERIALIZER_CLASS, StringDeserializer.class);
+        props.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, JsonDeserializer.class);
+        
+        // JsonDeserializer configuration
         props.put(JsonDeserializer.TRUSTED_PACKAGES, "com.mobileanalysis.common.events");
         props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, FileEvent.class.getName());
         props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false); // Don't require __TypeId__ header
+        
         return props;
     }
 
@@ -88,7 +118,7 @@ public class KafkaConfig {
         return new DefaultKafkaConsumerFactory<>(
             fileEventConsumerConfigs(),
             new StringDeserializer(),
-            new JsonDeserializer<>(FileEvent.class, false)
+            new ErrorHandlingDeserializer<>(new JsonDeserializer<>(FileEvent.class, false))
         );
     }
 
@@ -97,21 +127,32 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, FileEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(fileEventConsumerFactory());
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL); // Manual commit
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
+        factory.setCommonErrorHandler(createErrorHandler());
         return factory;
     }
 
-    // Consumer configuration for TaskResponseEvent (JSON deserialization)
+    // Consumer configuration for TaskResponseEvent (JSON deserialization with error handling)
     @Bean
     public Map<String, Object> taskResponseConsumerConfigs() {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false); // Manual commit for reliability
+        props.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
+        
+        // Use ErrorHandlingDeserializer to wrap JsonDeserializer
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+        
+        // Delegate to these deserializers
+        props.put(ErrorHandlingDeserializer.KEY_DESERIALIZER_CLASS, StringDeserializer.class);
+        props.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, JsonDeserializer.class);
+        
+        // JsonDeserializer configuration
         props.put(JsonDeserializer.TRUSTED_PACKAGES, "com.mobileanalysis.common.events");
         props.put(JsonDeserializer.VALUE_DEFAULT_TYPE, TaskResponseEvent.class.getName());
         props.put(JsonDeserializer.USE_TYPE_INFO_HEADERS, false); // Don't require __TypeId__ header
+        
         return props;
     }
 
@@ -120,7 +161,7 @@ public class KafkaConfig {
         return new DefaultKafkaConsumerFactory<>(
             taskResponseConsumerConfigs(),
             new StringDeserializer(),
-            new JsonDeserializer<>(TaskResponseEvent.class, false)
+            new ErrorHandlingDeserializer<>(new JsonDeserializer<>(TaskResponseEvent.class, false))
         );
     }
 
@@ -129,11 +170,12 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, TaskResponseEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(taskResponseConsumerFactory());
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL); // Manual commit
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
+        factory.setCommonErrorHandler(createErrorHandler());
         return factory;
     }
 
-    // Consumer configuration for String messages (for other use cases)
+    // Consumer configuration for String messages
     @Bean
     public Map<String, Object> stringConsumerConfigs() {
         Map<String, Object> props = new HashMap<>();
@@ -154,7 +196,51 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, String> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(stringConsumerFactory());
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL); // Manual commit
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
         return factory;
+    }
+
+    // ========== ERROR HANDLING ==========
+
+    /**
+     * Create error handler that:
+     * 1. Logs the error with full details
+     * 2. Commits the offset (don't retry malformed messages forever)
+     * 3. Allows consumer to continue processing next messages
+     * 
+     * This prevents infinite retry loops for malformed/unparseable messages.
+     */
+    private DefaultErrorHandler createErrorHandler() {
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(
+            (consumerRecord, exception) -> {
+                log.error(
+                    "Failed to process message from topic {} partition {} offset {}. "
+                    + "Skipping message. Error: {}",
+                    consumerRecord.topic(),
+                    consumerRecord.partition(),
+                    consumerRecord.offset(),
+                    exception.getMessage(),
+                    exception
+                );
+                
+                // Log the raw message content for debugging
+                log.error("Problematic message key: {}, value: {}", 
+                    consumerRecord.key(), consumerRecord.value());
+                
+                // TODO Phase 3: Send to DLQ topic for later investigation
+                log.warn("Message will be skipped (DLQ not yet implemented)");
+            },
+            new FixedBackOff(0L, 0L) // No retries - fail immediately
+        );
+        
+        // Don't retry these exception types
+        errorHandler.addNotRetryableExceptions(
+            org.springframework.kafka.support.serializer.DeserializationException.class,
+            org.springframework.messaging.converter.MessageConversionException.class,
+            org.springframework.messaging.handler.annotation.support.MethodArgumentNotValidException.class,
+            com.fasterxml.jackson.core.JsonProcessingException.class
+        );
+        
+        return errorHandler;
     }
 }
