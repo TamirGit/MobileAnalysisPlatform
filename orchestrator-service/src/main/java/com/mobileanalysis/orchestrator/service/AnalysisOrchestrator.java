@@ -124,8 +124,9 @@ public class AnalysisOrchestrator {
                 readyTasks.size(), analysisId);
             
             for (AnalysisTaskEntity task : readyTasks) {
-                // Mark task as dispatched and increment attempts
+                // Mark task as dispatched, set started timestamp, and increment attempts
                 task.setStatus(TaskStatus.DISPATCHED);
+                task.setStartedAt(Instant.now()); // Set when task execution begins
                 task.setAttempts(1); // First attempt
                 analysisTaskRepository.save(task);
                 
