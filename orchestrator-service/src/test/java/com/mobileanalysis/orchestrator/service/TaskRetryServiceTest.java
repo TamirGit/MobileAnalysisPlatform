@@ -1,6 +1,7 @@
 package com.mobileanalysis.orchestrator.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.mobileanalysis.common.domain.EngineType;
 import com.mobileanalysis.common.domain.TaskStatus;
 import com.mobileanalysis.orchestrator.domain.AnalysisEntity;
@@ -52,6 +53,9 @@ class TaskRetryServiceTest {
 
     @BeforeEach
     void setUp() {
+        // Register JSR310 module for Java 8 date/time support
+        objectMapper.registerModule(new JavaTimeModule());
+        
         failedTask = new AnalysisTaskEntity();
         failedTask.setId(1L);
         failedTask.setAnalysisId(UUID.randomUUID());
@@ -93,7 +97,6 @@ class TaskRetryServiceTest {
     void retryIfPossible_budgetExhausted_doesNotRetry() {
         // Given
         failedTask.setAttempts(3); // Already at max
-        when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(failedTask));
         when(taskConfigRepository.findById(1L)).thenReturn(Optional.of(taskConfig));
 
         // When
@@ -108,7 +111,6 @@ class TaskRetryServiceTest {
     void retryIfPossible_firstFailure_incrementsToAttempt2() {
         // Given
         failedTask.setAttempts(1);
-        when(analysisTaskRepository.findById(1L)).thenReturn(Optional.of(failedTask));
         when(taskConfigRepository.findById(1L)).thenReturn(Optional.of(taskConfig));
         when(analysisRepository.findById(failedTask.getAnalysisId())).thenReturn(Optional.of(analysis));
 

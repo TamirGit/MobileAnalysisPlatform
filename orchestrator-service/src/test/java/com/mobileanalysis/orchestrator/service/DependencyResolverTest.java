@@ -1,6 +1,7 @@
 package com.mobileanalysis.orchestrator.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.mobileanalysis.common.domain.EngineType;
 import com.mobileanalysis.common.domain.TaskStatus;
 import com.mobileanalysis.orchestrator.domain.AnalysisEntity;
@@ -51,6 +52,9 @@ class DependencyResolverTest {
 
     @BeforeEach
     void setUp() {
+        // Register JSR310 module for Java 8 date/time support
+        objectMapper.registerModule(new JavaTimeModule());
+        
         UUID analysisId = UUID.randomUUID();
 
         completedTask = new AnalysisTaskEntity();
@@ -67,6 +71,7 @@ class DependencyResolverTest {
         dependentTask.setEngineType(EngineType.DYNAMIC_ANALYSIS);
         dependentTask.setDependsOnTaskId(1L);
         dependentTask.setIdempotencyKey(UUID.randomUUID());
+        dependentTask.setAttempts(1);
 
         taskConfig = new TaskConfigEntity();
         taskConfig.setId(1L);
