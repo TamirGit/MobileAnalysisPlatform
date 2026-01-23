@@ -86,7 +86,7 @@ services:
       echo "Waiting for Kafka to be ready..."
       sleep 5
       
-      echo "=== Creating Topics ==="
+      echo "=== Creating Standard Topics ==="
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic file-events --partitions 3 --replication-factor 1
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic static-analysis-tasks --partitions 3 --replication-factor 1
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic dynamic-analysis-tasks --partitions 5 --replication-factor 1
@@ -96,7 +96,16 @@ services:
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic task-heartbeats --partitions 3 --replication-factor 1 --config retention.ms=86400000
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic orchestrator-responses-dlq --partitions 1 --replication-factor 1 --config retention.ms=2592000000
       
-      echo "Topics created successfully."
+      echo "=== Creating Dead Letter Queue (DLQ) Topics ==="
+      # DLQ topics have 30-day retention (2592000000 ms) for investigation
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic file-events.DLQ --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic static-analysis-tasks.DLQ --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic dynamic-analysis-tasks.DLQ --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic decompiler-tasks.DLQ --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic signature-check-tasks.DLQ --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic orchestrator-responses.DLQ --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+      
+      echo "Topics created successfully (including DLQ topics)."
       
       echo "=== Initializing Consumer Groups ==="
       
