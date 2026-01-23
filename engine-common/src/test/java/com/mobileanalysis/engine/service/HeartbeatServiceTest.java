@@ -45,21 +45,41 @@ class HeartbeatServiceTest {
 
         // When
         heartbeatService.startHeartbeat(taskId, analysisId, engineType);
-
-        // Then - verify heartbeat can be sent
+        
+        // Then - immediate heartbeat is sent (t=0)
+        verify(kafkaTemplate, times(1)).send(
+            eq("task-heartbeats"), 
+            eq(analysisId.toString()), 
+            any(HeartbeatEvent.class)
+        );
+        
+        // When - periodic heartbeat is triggered
         heartbeatService.sendHeartbeat();
-        verify(kafkaTemplate).send(eq("task-heartbeats"), eq(analysisId.toString()), any(HeartbeatEvent.class));
+        
+        // Then - second heartbeat is sent
+        verify(kafkaTemplate, times(2)).send(
+            eq("task-heartbeats"), 
+            eq(analysisId.toString()), 
+            any(HeartbeatEvent.class)
+        );
     }
 
     @Test
     void stopHeartbeat_clearsCurrentTask() {
         // Given
-        heartbeatService.startHeartbeat(1L, UUID.randomUUID(), "STATIC_ANALYSIS");
+        UUID analysisId = UUID.randomUUID();
+        heartbeatService.startHeartbeat(1L, analysisId, "STATIC_ANALYSIS");
+        
+        // Verify immediate heartbeat was sent
+        verify(kafkaTemplate, times(1)).send(anyString(), anyString(), any());
+        
+        // Reset mock to check behavior after stop
+        reset(kafkaTemplate);
 
         // When
         heartbeatService.stopHeartbeat();
 
-        // Then - no heartbeat should be sent
+        // Then - no heartbeat should be sent after stop
         heartbeatService.sendHeartbeat();
         verify(kafkaTemplate, never()).send(anyString(), anyString(), any());
     }
@@ -81,6 +101,9 @@ class HeartbeatServiceTest {
         String engineType = "STATIC_ANALYSIS";
 
         heartbeatService.startHeartbeat(taskId, analysisId, engineType);
+        
+        // Immediate heartbeat was sent, reset to capture the periodic one
+        reset(kafkaTemplate);
 
         // When
         heartbeatService.sendHeartbeat();
@@ -103,14 +126,16 @@ class HeartbeatServiceTest {
     void sendHeartbeat_kafkaFailure_doesNotThrow() {
         // Given
         heartbeatService.startHeartbeat(1L, UUID.randomUUID(), "STATIC_ANALYSIS");
+        
+        // Configure mock to throw on all sends (immediate + periodic)
         when(kafkaTemplate.send(anyString(), anyString(), any()))
             .thenThrow(new RuntimeException("Kafka error"));
 
-        // When/Then - should not throw
+        // When/Then - should not throw on periodic heartbeat
         heartbeatService.sendHeartbeat();
 
-        // Heartbeat remains active for next attempt
-        verify(kafkaTemplate).send(anyString(), anyString(), any());
+        // Should have been called twice: once for immediate, once for periodic
+        verify(kafkaTemplate, times(2)).send(anyString(), anyString(), any());
     }
 
     @Test
@@ -121,12 +146,18 @@ class HeartbeatServiceTest {
 
         // When
         heartbeatService.startHeartbeat(1L, analysisId1, "STATIC_ANALYSIS");
+        // First immediate heartbeat sent for task 1
+        
         heartbeatService.startHeartbeat(2L, analysisId2, "DYNAMIC_ANALYSIS");
+        // Second immediate heartbeat sent for task 2
+        
+        // Reset to check only the periodic behavior
+        reset(kafkaTemplate);
 
-        // Then - only sends heartbeat for second task
+        // Then - periodic heartbeat only sends for second (current) task
         heartbeatService.sendHeartbeat();
 
-        verify(kafkaTemplate).send(
+        verify(kafkaTemplate, times(1)).send(
             eq("task-heartbeats"),
             eq(analysisId2.toString()),
             argThat(event -> ((HeartbeatEvent) event).getTaskId().equals(2L))
