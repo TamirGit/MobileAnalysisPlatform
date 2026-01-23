@@ -69,20 +69,131 @@ services:
       # Initialize Kafka storage
       kafka-storage format -t $$CLUSTER_ID -c /etc/kafka/kafka.properties || true
       # Start Kafka
-      /etc/confluent/docker/run &
-      # Wait for Kafka to be ready
-      sleep 10
-      # Create topics
-      kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic file-events --partitions 3 --replication-factor 1
-      kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic static-analysis-tasks --partitions 3 --replication-factor 1
-      kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic dynamic-analysis-tasks --partitions 5 --replication-factor 1
-      kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic decompiler-tasks --partitions 2 --replication-factor 1
-      kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic signature-check-tasks --partitions 1 --replication-factor 1
-      kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic orchestrator-responses --partitions 3 --replication-factor 1
-      kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic task-heartbeats --partitions 3 --replication-factor 1 --config retention.ms=86400000
-      kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic orchestrator-responses-dlq --partitions 1 --replication-factor 1 --config retention.ms=2592000000
-      # Keep container running
-      wait
+      /etc/confluent/docker/run
+      '
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: mobile-analysis-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - mobile-analysis-network
+    command: |
+      bash -c '
+      echo "=== Kafka Initialization Started ==="
+      echo "Waiting for Kafka to be ready..."
+      sleep 5
+      
+      echo "=== Creating Topics ==="
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic file-events --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic static-analysis-tasks --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic dynamic-analysis-tasks --partitions 5 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic decompiler-tasks --partitions 2 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic signature-check-tasks --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic orchestrator-responses --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic task-heartbeats --partitions 3 --replication-factor 1 --config retention.ms=86400000
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic orchestrator-responses-dlq --partitions 1 --replication-factor 1 --config retention.ms=2592000000
+      
+      echo "Topics created successfully."
+      
+      echo "=== Initializing Consumer Groups ==="
+      
+      # Step 1: Create consumer groups by doing a quick poll
+      # This registers the groups with Kafka
+      echo "Creating orchestrator-service consumer group..."
+      timeout 3 kafka-console-consumer \
+        --bootstrap-server kafka:29092 \
+        --topic file-events \
+        --group orchestrator-service \
+        --timeout-ms 1000 > /dev/null 2>&1 || true
+      
+      echo "Creating static-analysis-engine-group consumer group..."
+      timeout 3 kafka-console-consumer \
+        --bootstrap-server kafka:29092 \
+        --topic static-analysis-tasks \
+        --group static-analysis-engine-group \
+        --timeout-ms 1000 > /dev/null 2>&1 || true
+      
+      echo "Creating dynamic-analysis-engine-group consumer group..."
+      timeout 3 kafka-console-consumer \
+        --bootstrap-server kafka:29092 \
+        --topic dynamic-analysis-tasks \
+        --group dynamic-analysis-engine-group \
+        --timeout-ms 1000 > /dev/null 2>&1 || true
+      
+      echo "Creating decompiler-engine-group consumer group..."
+      timeout 3 kafka-console-consumer \
+        --bootstrap-server kafka:29092 \
+        --topic decompiler-tasks \
+        --group decompiler-engine-group \
+        --timeout-ms 1000 > /dev/null 2>&1 || true
+      
+      echo "Creating signature-check-engine-group consumer group..."
+      timeout 3 kafka-console-consumer \
+        --bootstrap-server kafka:29092 \
+        --topic signature-check-tasks \
+        --group signature-check-engine-group \
+        --timeout-ms 1000 > /dev/null 2>&1 || true
+      
+      # Give Kafka time to register the groups
+      sleep 2
+      
+      # Step 2: Reset offsets to earliest (0) for all groups and topics
+      echo "=== Setting Consumer Group Offsets to Beginning ==="
+      
+      echo "Setting orchestrator-service offsets..."
+      kafka-consumer-groups --bootstrap-server kafka:29092 \
+        --group orchestrator-service \
+        --topic file-events \
+        --reset-offsets --to-earliest \
+        --execute 2>&1 || echo "Note: Group may not exist yet, will be created on first connection"
+      
+      kafka-consumer-groups --bootstrap-server kafka:29092 \
+        --group orchestrator-service \
+        --topic orchestrator-responses \
+        --reset-offsets --to-earliest \
+        --execute 2>&1 || echo "Note: Group may not exist yet, will be created on first connection"
+      
+      echo "Setting static-analysis-engine-group offsets..."
+      kafka-consumer-groups --bootstrap-server kafka:29092 \
+        --group static-analysis-engine-group \
+        --topic static-analysis-tasks \
+        --reset-offsets --to-earliest \
+        --execute 2>&1 || echo "Note: Group may not exist yet, will be created on first connection"
+      
+      echo "Setting dynamic-analysis-engine-group offsets..."
+      kafka-consumer-groups --bootstrap-server kafka:29092 \
+        --group dynamic-analysis-engine-group \
+        --topic dynamic-analysis-tasks \
+        --reset-offsets --to-earliest \
+        --execute 2>&1 || echo "Note: Group may not exist yet, will be created on first connection"
+      
+      echo "Setting decompiler-engine-group offsets..."
+      kafka-consumer-groups --bootstrap-server kafka:29092 \
+        --group decompiler-engine-group \
+        --topic decompiler-tasks \
+        --reset-offsets --to-earliest \
+        --execute 2>&1 || echo "Note: Group may not exist yet, will be created on first connection"
+      
+      echo "Setting signature-check-engine-group offsets..."
+      kafka-consumer-groups --bootstrap-server kafka:29092 \
+        --group signature-check-engine-group \
+        --topic signature-check-tasks \
+        --reset-offsets --to-earliest \
+        --execute 2>&1 || echo "Note: Group may not exist yet, will be created on first connection"
+      
+      echo "=== Verifying Consumer Groups ==="
+      kafka-consumer-groups --bootstrap-server kafka:29092 --list
+      
+      echo "=== Consumer Group Details ==="
+      for group in orchestrator-service static-analysis-engine-group; do
+        echo "--- $group ---"
+        kafka-consumer-groups --bootstrap-server kafka:29092 --group $group --describe 2>&1 || echo "Group will be initialized on first use"
+      done
+      
+      echo "=== Kafka Initialization Complete ==="
       '
 
 volumes:

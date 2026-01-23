@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: static-analysis-engine
+  profiles:
+    active: ${SPRING_PROFILE:local}
+  
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: static-analysis-engine-group
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "com.mobileanalysis.common.events"
+        isolation.level: read_committed
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+
+app:
+  storage:
+    base-path: ${STORAGE_PATH:/storage}
+  
+  kafka:
+    topics:
+      static-analysis-tasks: static-analysis-tasks
+      orchestrator-responses: orchestrator-responses
+      task-heartbeats: task-heartbeats
+
+logging:
+  level:
+    root: INFO
+    com.mobileanalysis: DEBUG
+    org.springframework.kafka: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - [analysisId=%X{analysisId}] [taskId=%X{taskId}] [engineType=%X{engineType}] - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always

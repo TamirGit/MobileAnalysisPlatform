@@ -6,6 +6,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.NonNull;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -38,6 +39,16 @@ public class TaskEvent {
     
     @JsonProperty("timeoutSeconds")
     private Integer timeoutSeconds;
+    
+    /**
+     * Current attempt number for this task (1-indexed).
+     * First execution = 1, first retry = 2, etc.
+     * Never null - defaults to 1 if not specified.
+     */
+    @JsonProperty("attempts")
+    @NonNull
+    @Builder.Default
+    private Integer attempts = 1;
     
     @JsonProperty("timestamp")
     private Instant timestamp;

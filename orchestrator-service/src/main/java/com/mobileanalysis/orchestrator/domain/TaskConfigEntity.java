@@ -38,6 +38,24 @@ public class TaskConfigEntity {
     @Builder.Default
     private Integer timeoutSeconds = 300;
     
+    /**
+     * Maximum number of TOTAL attempts for this task (including the original attempt).
+     * <p>
+     * Semantics:
+     * - maxRetries = 1: Only original attempt, no retries
+     * - maxRetries = 2: Original + 1 retry (2 total attempts)
+     * - maxRetries = 3: Original + 2 retries (3 total attempts) [DEFAULT]
+     * <p>
+     * Example: If maxRetries=3:
+     * - Attempt 1: Original execution
+     * - Attempt 2: First retry (if attempt 1 fails)
+     * - Attempt 3: Second retry (if attempt 2 fails)
+     * - After attempt 3 fails: Task permanently FAILED
+     * <p>
+     * Note: Despite the field name "maxRetries", this value represents the maximum
+     * number of total attempts, not additional retries. This is for backward compatibility
+     * with existing database schema and configurations.
+     */
     @Column(name = "max_retries", nullable = false)
     @Builder.Default
     private Integer maxRetries = 3;

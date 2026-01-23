@@ -794,6 +794,8 @@ All consumers must be updated to handle new schema.
 - No period at the end of subject
 - Provide detailed body for non-trivial changes
 - Reference issues/PRs in footer
+- Don't use: fix(critical), fix(low), fix(medium) etc. 
+- Do you: fix(orchestrator), fix(engine), etc.
 
 ## PIV Loop Standards
 
