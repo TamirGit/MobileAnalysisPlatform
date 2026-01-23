@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: dynamic-analysis-engine
+  
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: dynamic-analysis-consumer-group
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.trusted.packages: "*"
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+app:
+  kafka:
+    topics:
+      dynamic-analysis: dynamic-analysis-tasks
+      responses: orchestrator-responses
+      heartbeats: task-heartbeats
+    consumer-group: dynamic-analysis-consumer-group
+  
+  engine:
+    type: DYNAMIC_ANALYSIS
+    timeout-seconds: 1800  # 30 minutes for long-running dynamic analysis
+    heartbeat-interval-ms: ${HEARTBEAT_INTERVAL_MS:30000}
+  
+  storage:
+    base-path: ${STORAGE_PATH:/storage}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,info
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      engine-type: ${app.engine.type}
+
+logging:
+  level:
+    com.mobileanalysis: INFO
+    org.springframework.kafka: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
