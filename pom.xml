@@ -23,7 +23,7 @@
         <module>engine-common</module>
         <module>orchestrator-service</module>
         <module>static-analysis-engine</module>
-<!--        <module>dynamic-analysis-engine</module>-->
+        <module>dynamic-analysis-engine</module>
 <!--        <module>decompiler-engine</module>-->
 <!--        <module>signature-check-engine</module>-->
     </modules>
