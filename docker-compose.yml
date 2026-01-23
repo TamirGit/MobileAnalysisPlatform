@@ -129,7 +129,7 @@ services:
       timeout 3 kafka-console-consumer \
         --bootstrap-server kafka:29092 \
         --topic dynamic-analysis-tasks \
-        --group dynamic-analysis-engine-group \
+        --group dynamic-analysis-consumer-group \
         --timeout-ms 1000 > /dev/null 2>&1 || true
       
       echo "Creating decompiler-engine-group consumer group..."
@@ -174,7 +174,7 @@ services:
       
       echo "Setting dynamic-analysis-engine-group offsets..."
       kafka-consumer-groups --bootstrap-server kafka:29092 \
-        --group dynamic-analysis-engine-group \
+        --group dynamic-analysis-consumer-group \
         --topic dynamic-analysis-tasks \
         --reset-offsets --to-earliest \
         --execute 2>&1 || echo "Note: Group may not exist yet, will be created on first connection"
@@ -197,13 +197,103 @@ services:
       kafka-consumer-groups --bootstrap-server kafka:29092 --list
       
       echo "=== Consumer Group Details ==="
-      for group in orchestrator-service static-analysis-engine-group; do
+      for group in orchestrator-service static-analysis-engine-group dynamic-analysis-consumer-group; do
         echo "--- $group ---"
         kafka-consumer-groups --bootstrap-server kafka:29092 --group $group --describe 2>&1 || echo "Group will be initialized on first use"
       done
       
       echo "=== Kafka Initialization Complete ==="
       '
+
+  # Application Services
+
+  orchestrator-service:
+    build:
+      context: ./orchestrator-service
+      dockerfile: Dockerfile
+    container_name: mobile-analysis-orchestrator
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      DB_URL: jdbc:postgresql://postgres:5432/mobile_analysis
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      STORAGE_PATH: /storage
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./storage:/storage
+    networks:
+      - mobile-analysis-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  static-analysis-engine:
+    build:
+      context: ./static-analysis-engine
+      dockerfile: Dockerfile
+    container_name: mobile-analysis-static-engine
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      STORAGE_PATH: /storage
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./storage:/storage
+    networks:
+      - mobile-analysis-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  dynamic-analysis-engine:
+    build:
+      context: ./dynamic-analysis-engine
+      dockerfile: Dockerfile
+    container_name: mobile-analysis-dynamic-engine
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      STORAGE_PATH: /storage
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./storage:/storage
+    networks:
+      - mobile-analysis-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
 volumes:
   postgres_data:
