@@ -5,6 +5,7 @@ import com.mobileanalysis.common.events.TaskResponseEvent;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
@@ -13,6 +14,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.*;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
@@ -27,7 +29,7 @@ import java.util.Map;
  * 
  * Features:
  * - ErrorHandlingDeserializer wraps JsonDeserializer to catch malformed messages
- * - DefaultErrorHandler logs errors and commits offset (no infinite retry)
+ * - DefaultErrorHandler with DeadLetterPublishingRecoverer sends malformed messages to DLQ
  * - Manual acknowledgment for exactly-once semantics
  * - Separate factories for FileEvent, TaskResponseEvent, and String messages
  */
@@ -200,40 +202,47 @@ public class KafkaConfig {
         return factory;
     }
 
+    // ========== DLQ CONFIGURATION ==========
+
+    /**
+     * DeadLetterPublishingRecoverer routes malformed messages to DLQ topics.
+     * Each original topic gets a corresponding .DLQ suffix topic.
+     */
+    @Bean
+    public DeadLetterPublishingRecoverer deadLetterPublishingRecoverer(KafkaTemplate<String, Object> kafkaTemplate) {
+        return new DeadLetterPublishingRecoverer(kafkaTemplate,
+            (consumerRecord, exception) -> {
+                String originalTopic = consumerRecord.topic();
+                String dlqTopic = originalTopic + ".DLQ";
+                
+                log.warn("Routing message to DLQ. Original topic: {}, DLQ topic: {}, Partition: {}, Offset: {}, Error: {}",
+                    originalTopic, dlqTopic, consumerRecord.partition(), consumerRecord.offset(), exception.getMessage());
+                
+                // All DLQ topics use partition 0 for simplicity
+                return new TopicPartition(dlqTopic, 0);
+            });
+    }
+
     // ========== ERROR HANDLING ==========
 
     /**
      * Create error handler that:
-     * 1. Logs the error with full details
+     * 1. Sends malformed messages to DLQ via DeadLetterPublishingRecoverer
      * 2. Commits the offset (don't retry malformed messages forever)
      * 3. Allows consumer to continue processing next messages
      * 
      * This prevents infinite retry loops for malformed/unparseable messages.
      */
     private DefaultErrorHandler createErrorHandler() {
+        // Create recoverer that sends to DLQ
+        DeadLetterPublishingRecoverer recoverer = deadLetterPublishingRecoverer(kafkaTemplate());
+        
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(
-            (consumerRecord, exception) -> {
-                log.error(
-                    "Failed to process message from topic {} partition {} offset {}. "
-                    + "Skipping message. Error: {}",
-                    consumerRecord.topic(),
-                    consumerRecord.partition(),
-                    consumerRecord.offset(),
-                    exception.getMessage(),
-                    exception
-                );
-                
-                // Log the raw message content for debugging
-                log.error("Problematic message key: {}, value: {}", 
-                    consumerRecord.key(), consumerRecord.value());
-                
-                // TODO Phase 3: Send to DLQ topic for later investigation
-                log.warn("Message will be skipped (DLQ not yet implemented)");
-            },
-            new FixedBackOff(0L, 0L) // No retries - fail immediately
+            recoverer,
+            new FixedBackOff(0L, 0L) // No retries - fail immediately and send to DLQ
         );
         
-        // Don't retry these exception types
+        // Don't retry these exception types - send directly to DLQ
         errorHandler.addNotRetryableExceptions(
             org.springframework.kafka.support.serializer.DeserializationException.class,
             org.springframework.messaging.converter.MessageConversionException.class,
